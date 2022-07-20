@@ -186,16 +186,9 @@ pub const TokenStream = struct {
             'a'...'z', 'A'...'Z'
                 => return parseIdentOrKeyword(text),
             '0'...'9'
-                => return parseNumber(text),
+                => return self.parseNumber(),
 
-            '.' => {
-                if (std.mem.startsWith(u8, text, "..")) {
-                    return Token.init(.dotdot, text[0..2]);
-                }
-                else {
-                    return Token.init(.dot, text[0..1]);
-                }
-            },
+            '.' => return self.parseDot(),
             
             else => |c| {
                 if (TokenTag.single_char_map[c]) |tag| {
@@ -282,12 +275,47 @@ pub const TokenStream = struct {
         };
     }
 
-    fn parseNumber(text: []const u8) Token {
-        const token_text = many(text, std.ascii.isDigit);
-        return .{
-            .tag = .number,
-            .text = token_text,
-        };
+
+    fn parseDot(self: *TokenStream) Token {
+        const rest = self.rest;
+        if (rest.len > 1){
+            if (rest[1] == '.') {
+                return Token.init(.dotdot, rest[0..2]);
+            }
+            else {
+                const digits_len = many(rest[1..], std.ascii.isDigit).len;
+                if (digits_len > 0) {
+                    const number = rest[0..digits_len + 1];
+                    self.sourceError(number, "decimal number literal starts with decimal point. add a single leading 0", .{});
+                    return Token.init(.number, number);
+                }
+            }
+        }
+        return Token.init(.dot, rest[0..1]);
+    }
+
+    fn parseNumber(self: *TokenStream) Token {
+        const rest = self.rest;
+        const whole_len = many(rest, std.ascii.isDigit).len;
+        var len = whole_len;
+        if (len < rest.len and rest[len] == '.') {
+            len += 1;
+            if (len < rest.len and rest[len] != '.') {
+                len += many(rest[len..], std.ascii.isDigit).len;
+            }
+        }
+        const number = rest[0..len];
+        if (whole_len > 1 and number[0] == '0') {
+            self.sourceError(number, "decimal number literal has leading zeroes", .{});
+        }
+        if (len == whole_len + 1) {
+            self.sourceError(number, "decimal number literal has no digits after decimal point", .{});
+        }
+        return Token.init(.number, number);
+    }
+    
+    fn isNumberChar(c: u8) bool {
+        return std.ascii.isDigit(c) or c == '.';
     }
 
     fn parseImportPath(self: *TokenStream) ?[]const u8 {
