@@ -1,0 +1,20 @@
+let lib = import src/lib/akesi.kule
+let buffers = import buffers.kule
+let parent = import ../lib.kule
+
+let mvp = model * view * proj
+
+let ma = module {
+    pub let toki = (
+        pona / li.musi(mute + 256)
+    )
+
+    // comment
+
+    let frag_position = mvp * position
+        where position = 2000
+
+}
+
+
+let soweli (suwi: Walo) = 25 + ma.toki * suwi.mute
