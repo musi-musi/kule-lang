@@ -575,18 +575,18 @@ const ast = struct {
         import: Import,
 
         const node_name = "expression";
-        const start_tags: []const TokenTag = &.{
-            .identifier, .number, .lparen,
-            .plus, .minus,
-            .kw_module, .kw_import,
-        };
+        const start_tags: []const TokenTag = keyword_start_tags ++ atom_start_tags ++ prefix_start_tags;
 
-        const ExprParser = fn(*Parser, usize) E!Expr;
+        const keyword_start_tags: [] const TokenTag = &.{.kw_module, .kw_import};
+        const atom_start_tags: [] const TokenTag = &.{ .identifier, .number, .lparen };
+        const prefix_start_tags: []const TokenTag = &.{ .plus, .minus, };
+
+        const ExprParser = fn(*Parser, comptime usize) E!Expr;
 
         const parse_list = [_]ExprParser {
             binaryExpr(&.{ .plus, .minus}),
             binaryExpr(&.{ .aster, .fslash}),
-            prefixExpr(&.{ .plus, .minus }),
+            prefixExpr(prefix_start_tags),
             paramEval,
             memberAccess,
             atom,
@@ -678,35 +678,56 @@ const ast = struct {
             }
         }
 
-        fn atom(p: *Parser, _: usize) E!Expr {
-            if (p.nextIsOne(&.{.kw_module, .kw_import})) |token| {
-                switch (token.tag) {
-                    .kw_module => {
-                        return Expr {
-                            .module_def = try p.parseNode(ModuleDef),
-                        };
-                    },
-                    .kw_import => {
-                        return Expr {
-                            .import = try p.parseNode(Import),
-                        };
-                    },
-                    else => unreachable,
+        fn atom(parser: *Parser, _: usize) E!Expr {
+            const Atom = struct {
+                expr: Expr,
+
+                const node_name = Expr.node_name;
+                const start_tags: [] const TokenTag = keyword_start_tags ++ atom_start_tags;
+                
+
+                const Atom = @This();
+
+                fn parse(p: *Parser) E!Atom {
+                    const expr: Expr = blk: {
+                        if (p.nextIsOne(keyword_start_tags)) |token| {
+                            switch (token.tag) {
+                                .kw_module => {
+                                    break :blk Expr {
+                                        .module_def = try p.parseNode(ModuleDef),
+                                    };
+                                },
+                                .kw_import => {
+                                    break :blk Expr {
+                                        .import = try p.parseNode(Import),
+                                    };
+                                },
+                                else => unreachable,
+                            }
+                        }
+                        else {
+                            const token = try p.acceptOne(atom_start_tags);
+                            break :blk switch (token.tag) {
+                                .identifier => Expr { .identifier = token },
+                                .number => Expr { .num_literal = token },
+                                .lparen => {
+                                    const expr = try p.parseNode(Expr);
+                                    _ = try p.accept(.rparen);
+                                    break :blk expr;
+                                },
+                                else => unreachable,
+                            };
+                        }
+                    };
+                    return Atom {
+                        .expr = expr,
+                    };
                 }
-            }
-            else {
-                const token = try p.acceptOne(&.{ .identifier, .number, .lparen });
-                return switch (token.tag) {
-                    .identifier => Expr { .identifier = token },
-                    .number => Expr { .num_literal = token },
-                    .lparen => blk: {
-                        const expr = try p.parseNode(Expr);
-                        _ = try p.accept(.rparen);
-                        break :blk expr;
-                    },
-                    else => unreachable,
-                };
-            }
+
+            };
+            return (try parser.parseNode(Atom)).expr;
+
+           
         }
 
         fn dump(self: Expr, w: anytype, level: usize) @TypeOf(w).Error!void {
