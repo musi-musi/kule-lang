@@ -48,15 +48,32 @@ pub const Parser = struct {
         return tree;
     }
 
-    fn parseNode(self: *Parser, comptime Node: type) Error!Node {
-        if (self.nextIsNotOne(Node.start_tags)) {
+    fn acceptEof(self: *Parser) Error!void {
+        if (self.tokens.next()) |token| {
+            self.sourceErrorUnexpectedToken(token, "end of file");
+            return Error.ParseFailed;
+        }
+    }
+
+    fn acceptNode(self: *Parser, comptime Node: type) Error!Node {
+        if (try self.acceptNodeOpt(Node)) |node| {
+            return node;
+        }
+        else {
             self.sourceErrorUnexpectedToken(self.tokens.lookahead,  Node.node_name);
             return Error.ParseFailed;
         }
+    }
+
+    fn acceptNodeOpt(self: *Parser, comptime Node: type) Error!?Node {
+        if (self.nextIsNotOne(Node.start_tags)) {
+            return null;
+        }
         else {
-            return Node.parse(self);
+            return try Node.parse(self);
         }
     }
+
 
     fn astAllocator(self: *Parser) Allocator {
         return self.arena.?.allocator();
@@ -130,23 +147,6 @@ pub const Parser = struct {
                 }
             }
             self.sourceErrorUnexpectedToken(self.tokens.lookahead, expected);
-            // if (self.tokens.lookahead) |token| {
-            //     self.sourceError(token.text, "expected {s}, found \"{s}\"", .{expected, token.text});
-            // }
-            // else {
-            //     const lines = self.source.lines;
-            //     var i: usize = lines.len - 1;
-            //     const line: []const u8 = (
-            //         while (i >= 0) : (i -= 1) {
-            //             if (lines[i].len > 0) {
-            //                 break lines[i];
-            //             }
-            //         }
-            //         else lines[0]
-            //     );
-            //     const eol = if (line.len > 0) line[line.len - 1..] else line;
-            //     self.sourceError(eol, "expected {s}, found end of file", .{expected});
-            // }
             return error.ParseFailed;
         }
     }
@@ -288,7 +288,7 @@ const ast = struct {
 
     fn typeAnnotation(p: *Parser) E!Expr {
         _ = try p.accept(.colon);
-        return p.parseNode(Expr);
+        return p.acceptNode(Expr);
     }
 
     fn ParseFn(comptime T: type) type {
@@ -308,7 +308,7 @@ const ast = struct {
             if (items.items.len > 0) {
                 _ = try p.accept(delim);
             }
-            const item = try p.parseNode(Node);
+            const item = try p.acceptNode(Node);
             try items.append(allocator, item);
         }
         if (allow_trailing) {
@@ -317,37 +317,47 @@ const ast = struct {
         return items.toOwnedSlice(allocator);
     }
 
-    fn list(
+    fn unboundDelimitedList(
         p: *Parser,
         comptime Node: type,
-        comptime end_predicate: fn (?Token) bool,
+        comptime delim: TokenTag,
     ) E![]const Node {
         const allocator = p.astAllocator();
         var items = std.ArrayListUnmanaged(Node){};
-        while (!end_predicate(p.tokens.lookahead)) {
-            const item = try p.parseNode(Node);
+        while (true) {
+            if (try p.acceptNodeOpt(Node)) |item| {
+                try items.append(allocator, item);
+                if ((try p.acceptOpt(delim)) == null) {
+                    break;
+                }
+            }
+            else {
+                break;
+            }
+        }
+        return items.toOwnedSlice(allocator);
+    }
+
+    fn list(
+        p: *Parser, comptime Node: type) E![]const Node {
+        const allocator = p.astAllocator();
+        var items = std.ArrayListUnmanaged(Node){};
+        while (try p.acceptNodeOpt(Node)) |item| {
             try items.append(allocator, item);
         }
         return items.toOwnedSlice(allocator);
     }
 
-    fn tagIsPredicate(comptime tag: ?TokenTag) fn(?Token) bool {
+    fn tagIsPredicate(comptime tag: TokenTag) fn(?Token) bool {
         return tagIsOnePredicate(&.{tag});
     }
     
-    fn tagIsOnePredicate(comptime tags: []const ?TokenTag) fn(?Token) bool {
+    fn tagIsOnePredicate(comptime tags: []const TokenTag) fn(?Token) bool {
         return struct {
             fn f(next: ?Token) bool {
-                inline for (tags) |tag_opt| {
-                    if (tag_opt) |tag| {
-                        if (next != null and next.?.tag == tag) {
-                            return true;
-                        }
-                    }
-                    else {
-                        if (next == null) {
-                            return true;
-                        }
+                inline for (tags) |tag| {
+                    if (next != null and next.?.tag == tag) {
+                        return true;
                     }
                 }
                 return false;
@@ -355,23 +365,16 @@ const ast = struct {
         }.f;
     }
 
-    fn tagIsNotPredicate(comptime tag: ?TokenTag) fn(?Token) bool {
+    fn tagIsNotPredicate(comptime tag: TokenTag) fn(?Token) bool {
         return tagIsNotOnePredicate(&.{tag});
     }
 
-    fn tagIsNotOnePredicate(comptime tags: []const ?TokenTag) fn(?Token) bool {
+    fn tagIsNotOnePredicate(comptime tags: []const TokenTag) fn(?Token) bool {
         return struct {
             fn f(next: ?Token) bool {
-                inline for (tags) |tag_opt| {
-                    if (tag_opt) |tag| {
-                        if (next != null and next.?.tag == tag) {
-                            return false;
-                        }
-                    }
-                    else {
-                        if (next == null) {
-                            return false;
-                        }
+                inline for (tags) |tag| {
+                    if (next != null and next.?.tag == tag) {
+                        return false;
                     }
                 }
                 return true;
@@ -379,12 +382,16 @@ const ast = struct {
         }.f;
     }
 
+    fn eofPredicate(next :?Token) bool {
+        return next == null;
+    }
+
     pub const TopLevel = struct {
         decls: []const LetDecl,
 
         fn parse(p: *Parser) E!TopLevel {
             return TopLevel {
-                .decls = try list(p, LetDecl, comptime tagIsPredicate(null)),
+                .decls = try list(p, LetDecl),
             };
         }
 
@@ -408,7 +415,7 @@ const ast = struct {
                     if (p.nextIsNotOne(&.{.rparen, .comma})) {
                         return ParamDecl {
                             .name = name,
-                            .type_annotation = try p.parseNode(Expr),
+                            .type_annotation = try p.acceptNode(Expr),
                         };
                     }
                     else {
@@ -438,6 +445,7 @@ const ast = struct {
     pub const LetDecl = struct {
         is_pub: bool,
         decl: Decl,
+        where_clauses: []const WhereClause,
 
         const node_name = "let statement";
         const start_tags: [] const TokenTag = &.{ .kw_pub, .kw_let, };
@@ -447,9 +455,12 @@ const ast = struct {
             if (is_pub) {
                 _ = try p.accept(.kw_let);
             }
+            const decl = try p.acceptNode(Decl);
+            const where_clauses = try list(p, WhereClause);
             return LetDecl {
                 .is_pub = is_pub,
-                .decl = try p.parseNode(Decl),
+                .decl = decl,
+                .where_clauses = where_clauses,
             };
         }
 
@@ -457,6 +468,9 @@ const ast = struct {
             try writeIndent(w, level, "let_decl");
             try printIndent(w, level + 1, "(is_pub) {}", .{self.is_pub});
             try self.decl.dump(w, level + 1);
+            if (self.where_clauses.len > 0) {
+                try dumpList(w, level + 1, "where_clauses", WhereClause, self.where_clauses);
+            }
         }
     };
 
@@ -465,7 +479,6 @@ const ast = struct {
         type_annotation: ?Expr,
         value: Expr,
         parameters: ?[]const ParamDecl,
-        where_clause: ?WhereClause,
 
         const node_name = "declaration";
         const start_tags: [] const TokenTag = &.{ .identifier, };
@@ -492,21 +505,13 @@ const ast = struct {
                     null
             );
             _ = try p.accept(.equal);
-            const value = try p.parseNode(Expr);
-            const where_clause: ?WhereClause = blk: {
-                if (p.nextIs(.kw_where) != null) {
-                    break :blk try p.parseNode(WhereClause);
-                }
-                else {
-                    break :blk null;
-                }
-            };
+            const value = try p.acceptNode(Expr);
+            
             return Decl {
                 .name = name,
                 .type_annotation = type_annotation,
                 .value = value,
                 .parameters = parameters,
-                .where_clause = where_clause,
             };
         }
 
@@ -522,44 +527,26 @@ const ast = struct {
             if (self.parameters) |parameters| {
                 try dumpList(w, level + 1, "(parameters)", ParamDecl, parameters);
             }
-            if (self.where_clause) |where_clause| {
-                try where_clause.dump(w, level + 1);
-            }
         }
 
     };
 
     pub const WhereClause = struct {
-        decls: []const Decl,
+        decl: Decl,
 
         const node_name = "where clause";
         const start_tags: [] const TokenTag = &.{ .kw_where, };
 
         fn parse(p: *Parser) E!WhereClause {
-            const kw_where = try p.accept(.kw_where);
-            const decls = blk: {
-                if ((try p.acceptOpt(.lcurly)) != null) {
-                    const curly_decls = try delimitedList(p, Decl, .comma, comptime tagIsPredicate(.rcurly), true);
-                    _ = try p.accept(.rcurly);
-                    if (curly_decls.len == 0) {
-                        p.sourceError(kw_where.text, "where clause missing declarations", .{});
-                    }
-                    break :blk curly_decls;
-                }
-                else {
-                    const decl = try p.parseNode(Decl);
-                    const decls_single = try p.astAllocator().alloc(Decl, 1);
-                    decls_single[0] = decl;
-                    break :blk decls_single;
-                }
-            };
+            _ = try p.accept(.kw_where);
             return WhereClause {
-                .decls = decls,
+                .decl = try p.acceptNode(Decl),
             };
         }
 
         fn dump(self: WhereClause, w: anytype, level: usize) @TypeOf(w).Error!void {
-            try dumpList(w, level, "where_clause", Decl, self.decls);
+            try writeIndent(w, level, "where_clause");
+            try self.decl.dump(w, level + 1);
         }
     };
 
@@ -694,12 +681,12 @@ const ast = struct {
                             switch (token.tag) {
                                 .kw_module => {
                                     break :blk Expr {
-                                        .module_def = try p.parseNode(ModuleDef),
+                                        .module_def = try p.acceptNode(ModuleDef),
                                     };
                                 },
                                 .kw_import => {
                                     break :blk Expr {
-                                        .import = try p.parseNode(Import),
+                                        .import = try p.acceptNode(Import),
                                     };
                                 },
                                 else => unreachable,
@@ -711,7 +698,7 @@ const ast = struct {
                                 .identifier => Expr { .identifier = token },
                                 .number => Expr { .num_literal = token },
                                 .lparen => {
-                                    const expr = try p.parseNode(Expr);
+                                    const expr = try p.acceptNode(Expr);
                                     _ = try p.accept(.rparen);
                                     break :blk expr;
                                 },
@@ -725,7 +712,7 @@ const ast = struct {
                 }
 
             };
-            return (try parser.parseNode(Atom)).expr;
+            return (try parser.acceptNode(Atom)).expr;
 
            
         }
@@ -800,7 +787,7 @@ const ast = struct {
         fn parse(p: *Parser) E!ModuleDef {
             _ = try p.accept(.kw_module);
             _ = try p.accept(.lcurly);
-            const decls = try list(p, LetDecl, comptime tagIsPredicate(.rcurly));
+            const decls = try list(p, LetDecl);
             _ = try p.accept(.rcurly);
             return ModuleDef {
                 .decls = decls,
