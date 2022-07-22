@@ -1,6 +1,8 @@
 const std = @import("std");
 const kule = @import("kule.zig");
 
+const compiler = kule.compiler;
+
 const Allocator = std.mem.Allocator;
 
 pub fn main() !void {
@@ -9,15 +11,26 @@ pub fn main() !void {
     var args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     if (args.len <= 1) {
-        kule.log.err("must provide at least one source filename", .{});
+        kule.log.err("must provide action", .{});
         // std.os.exit(1);
     }
     else {
-        for (args[1..]) |arg| {
-            parseFile(allocator, arg) catch {};
+        const action = args[1];
+        if (std.mem.eql(u8, action, "parse")) {
+            if (args.len <= 2) {
+                kule.log.err("must provide at least one source file", .{});
+                // std.os.exit(1);
+            }
+            for (args[2..]) |arg| {
+                parseFile(allocator, arg) catch {};
+            }
+        }
+        else if (std.mem.eql(u8, action, "server")) {
+            try kule.server.run();
         }
     }
 }
+
 
 fn parseFile(allocator: Allocator, path: []const u8) !void {
     var src = try kule.Source.fromFileLocal(allocator, path);
@@ -26,9 +39,9 @@ fn parseFile(allocator: Allocator, path: []const u8) !void {
     // try tokens.dump();
     var diagnostics = kule.diagnostics.Diagnostics.init(allocator);
     defer diagnostics.deinit();
-    var parser = try kule.Parser.init(allocator, src, &diagnostics);
+    var parser = try compiler.Parser.init(allocator, src, &diagnostics);
     defer parser.deinit();
-    const err: ?kule.Parser.Error = blk: {
+    const err: ?compiler.Parser.Error = blk: {
         if (parser.parse()) |ast| {
             defer ast.deinit();
             const stdout = std.io.getStdOut().writer();

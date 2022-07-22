@@ -1,8 +1,8 @@
 const std = @import("std");
-const source = @import("source.zig");
+const source = @import("../source.zig");
 const lexer = @import("lexer.zig");
-const log = @import("log.zig");
-const diagnostics = @import("diagnostics.zig");
+const log = @import("../log.zig");
+const diagnostics = @import("../diagnostics.zig");
 
 const Source = source.Source;
 const SourceLocation = source.SourceLocation;

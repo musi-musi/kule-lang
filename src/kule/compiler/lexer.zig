@@ -1,7 +1,7 @@
 const std = @import("std");
-const source = @import("source.zig");
-const log = @import("log.zig");
-const diagnostics = @import("diagnostics.zig");
+const source = @import("../source.zig");
+const log = @import("../log.zig");
+const diagnostics = @import("../diagnostics.zig");
 
 const Source = source.Source;
 const Diagnostics = diagnostics.Diagnostics;
