@@ -137,7 +137,6 @@ pub fn JsonWriter(comptime Writer: type) type {
 }
 
 pub const JsonReader = struct {
-    allocator: Allocator,
     source: []const u8,
     i: usize = 0,
     stream: Stream,
@@ -178,22 +177,10 @@ pub const JsonReader = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, src: []const u8) Self {
-        return Self {
-            .allocator = allocator,
-            .source = src,
-            .stream = Stream.init(),
-        };
-    }
-
-    pub fn deinit(self: Self) void {
-        _ = self;
-    }
-
-    pub fn reset(self: *Self, src: []const u8) void {
+    pub fn init(self: *Self, src: []const u8) void {
         self.source = src;
-        self.stream.reset();
         self.i = 0;
+        self.stream.reset();
         self.next_token = null;
     }
 

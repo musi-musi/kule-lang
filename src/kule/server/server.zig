@@ -55,7 +55,7 @@ pub const Server = struct {
     in: Reader,
     out: Writer,
     out_file: File,
-    json_reader: json.JsonReader,
+    json_reader: json.JsonReader = undefined,
     incoming_buffer: []u8,
     outgoing_buffer: MessageBuffer,
 
@@ -73,7 +73,6 @@ pub const Server = struct {
             .in = std.io.getStdIn().reader(),
             .out = out_file.writer(),
             .out_file = out_file,
-            .json_reader = json.JsonReader.init(allocator, ""),
             .incoming_buffer = try allocator.alloc(u8, 512),
             .outgoing_buffer = try MessageBuffer.initCapacity(allocator, 512),
         };
@@ -91,7 +90,7 @@ pub const Server = struct {
     pub fn run(self: *Self) !void {
         while (true) {
             const msg = try self.readRpcMessage();
-            self.json_reader.reset(msg);
+            self.json_reader.init(msg);
             try self.json_reader.beginObject();
             const header = try self.json_reader.readObject(RequestHeader);
             if (method_response_map.get(header.method)) |response| {
