@@ -1,11 +1,14 @@
 const std = @import("std");
 const source = @import("source.zig");
 const log = @import("log.zig");
+const diagnostics = @import("diagnostics.zig");
 
 const Source = source.Source;
+const Diagnostics = diagnostics.Diagnostics;
 
 pub const TokenTag = enum(u32) {
     invalid,
+    end_of_file,
 
     identifier,
     number,
@@ -17,6 +20,7 @@ pub const TokenTag = enum(u32) {
     kw_module,
     kw_pub,
     kw_import,
+    kw_as,
 
     dot,
     dotdot,
@@ -83,9 +87,19 @@ pub const TokenTag = enum(u32) {
             return switch (tag) {
                 .dot => "'.'",
                 .dotdot => "\"..\"",
-                .import_path => "import path",
-                .number => "number literal",
-                else => @tagName(tag),
+                else => blk: {
+                    const tag_name = @tagName(tag);
+                    var final_name: [tag_name.len]u8 = undefined;
+                    for (tag_name) |c, i| {
+                        if (c == '_') {
+                            final_name[i] = ' ';
+                        }
+                        else {
+                            final_name[i] = c;
+                        }
+                    }
+                    break :blk &final_name;
+                },
             };
         }
     }
@@ -111,26 +125,30 @@ pub const TokenStream = struct {
 
     source: Source,
     rest: []const u8,
-    lookahead: ?Token,
+    lookahead: Token,
     error_count: usize = 0,
+    diagnostics: ?*Diagnostics,
 
     pub const Error = error {
         InvalidToken,
     };
 
-    pub fn init(src: Source) Error!TokenStream {
+    pub fn init(src: Source, diags: ?*Diagnostics) Error!TokenStream {
         var self: TokenStream = .{
             .source = src,
             .rest = src.text,
-            .lookahead = null,
+            .lookahead = undefined,
+            .diagnostics = diags,
         };
         _ = try self.tryNext();
         return self;
     }
 
-    pub fn next(self: *TokenStream) ?Token {
+    pub fn next(self: *TokenStream) Token {
         const result = self.lookahead;
-        self.advance();
+        if (result.tag != .end_of_file) {
+            self.advance();
+        }
         return result;
     }
 
@@ -141,44 +159,56 @@ pub const TokenStream = struct {
         }
     }
 
-    pub fn tryNext(self: *TokenStream) !?Token {
-        const token_opt = self.next();
-        if (token_opt) |token| {
-            if (token.tag == .invalid) {
-                while (self.next() != null) {
-                    // lex the rest of the source, logging errors
-                    // there will be no way to recover this stream
-                    self.advance();
-                }
-                return Error.InvalidToken;
+    pub fn tryNext(self: *TokenStream) !Token {
+        const token = self.next();
+        if (token.tag == .invalid) {
+            while (self.next().tag != .end_of_file) {
+                // lex the rest of the source, logging errors
+                // there will be no way to recover this stream
+                self.advance();
             }
+            return Error.InvalidToken;
         }
-        return token_opt;
+        return token;
     }
 
     fn advance(self: *TokenStream) void {
         self.rest = skipWhitespaceAndComments(self.rest);
-        self.lookahead = self.parseToken();
-        if (self.lookahead) |token| {
+        const token = self.parseToken();
+        self.lookahead = token;
+        if (token.tag == .end_of_file) {
+            self.rest.len = 0;
+        }
+        else {
             self.rest = self.rest[token.text.len..];
         }
     }
 
-    fn parseToken(self: *TokenStream) ?Token {
+    fn parseToken(self: *TokenStream) Token {
         const text = self.rest;
+        const last = self.lookahead;
         if (text.len == 0) {
-            return null;
-        }
-        if (self.lookahead) |last| {
-            if (last.tag == .kw_import) {
-                if (self.isOnNewLine()) {
-                    self.sourceError(last.text, "import path missing. path must be on the same line", .{});
-                    return Token.init(.import_path, "");
+            const marker_index = blk: {
+                const text_addr = @ptrToInt(self.source.text.ptr);
+                const last_addr = @ptrToInt(last.text.ptr) + last.text.len;
+                const index = last_addr - text_addr;
+                if (index == self.source.text.len) {
+                    break :blk index - 1;
                 }
                 else {
-                    if (self.parseImportPath()) |path| {
-                        return Token.init(.import_path, path);
-                    }
+                    break :blk index;
+                }
+            };
+            return Token.init(.end_of_file, self.source.text[marker_index..][0..1]);
+        }
+        if (last.tag == .kw_import) {
+            if (self.isOnNewLine()) {
+                self.sourceError(last.text, "import path missing. path must be on the same line", .{});
+                return Token.init(.import_path, "");
+            }
+            else {
+                if (self.parseImportPath()) |path| {
+                    return Token.init(.import_path, path);
                 }
             }
         }
@@ -212,20 +242,21 @@ pub const TokenStream = struct {
 
     pub fn sourceError(self: *TokenStream, token: []const u8, comptime format: []const u8, args: anytype) void {
         self.error_count += 1;
-        log.sourceError(self.source, token, format, args);
+        if (self.diagnostics) |diags| {
+            diags.sourceErrorErrorPanic(&self.source, token, format, args);
+        }
     }
 
     fn isOnNewLine(self: TokenStream) bool {
-        if (self.lookahead) |token| {
-            const prev = token.text;
-            const rest_addr = @ptrToInt(self.rest.ptr);
-            const prev_addr = @ptrToInt(prev.ptr);
-            const len = rest_addr - prev_addr;
-            const gap = prev.ptr[prev.len..len];
-            for (gap) |c| {
-                if (c == '\n' or c == '\r') {
-                    return true;
-                }
+        const token = self.lookahead;
+        const prev = token.text;
+        const rest_addr = @ptrToInt(self.rest.ptr);
+        const prev_addr = @ptrToInt(prev.ptr);
+        const len = rest_addr - prev_addr;
+        const gap = prev.ptr[prev.len..len];
+        for (gap) |c| {
+            if (c == '\n' or c == '\r') {
+                return true;
             }
         }
         return false;

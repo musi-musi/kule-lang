@@ -24,16 +24,23 @@ fn parseFile(allocator: Allocator, path: []const u8) !void {
     defer src.deinitFile(allocator);
     // var tokens = try kule.TokenStream.init(src);
     // try tokens.dump();
-    var parser = try kule.Parser.init(allocator, src);
+    var diagnostics = kule.diagnostics.Diagnostics.init(allocator);
+    defer diagnostics.deinit();
+    var parser = try kule.Parser.init(allocator, src, &diagnostics);
     defer parser.deinit();
-    if (parser.parse()) |ast| {
-        defer ast.deinit();
-        const stdout = std.io.getStdOut().writer();
-        kule.log.info("parsed file {s}", .{path});
-        try ast.dump(stdout);
-    }
-    else |err| {
-        kule.log.err("{s} failed with {d} errors", .{path, parser.error_count});
-        return err;
-    }
+    const err: ?kule.Parser.Error = blk: {
+        if (parser.parse()) |ast| {
+            defer ast.deinit();
+            const stdout = std.io.getStdOut().writer();
+            kule.log.info("parsed file {s}", .{path});
+            try ast.dump(stdout);
+            break :blk null;
+        }
+        else |err| {
+            kule.log.err("{s} failed with {d} errors", .{path, parser.error_count});
+            break :blk err;
+        }
+    };
+    try diagnostics.logMessages();
+    return err orelse {};
 }

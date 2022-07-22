@@ -2,6 +2,7 @@ const std = @import("std");
 const source = @import("source.zig");
 const lexer = @import("lexer.zig");
 const log = @import("log.zig");
+const diagnostics = @import("diagnostics.zig");
 
 const Source = source.Source;
 const SourceLocation = source.SourceLocation;
@@ -12,6 +13,8 @@ const TokenStream = lexer.TokenStream;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
+const Diagnostics = diagnostics.Diagnostics;
+
 pub const Parser = struct {
 
     allocator: Allocator,
@@ -19,17 +22,19 @@ pub const Parser = struct {
     source: Source,
     tokens: TokenStream,
     error_count: usize = 0,
+    diagnostics: ?*Diagnostics,
 
     pub const Error = error {
         ParseFailed,
     } || TokenStream.Error || Allocator.Error;
 
-    pub fn init(allocator: Allocator, src: Source) TokenStream.Error!Parser {
+    pub fn init(allocator: Allocator, src: Source, diags: ?*Diagnostics) TokenStream.Error!Parser {
         return Parser {
             .allocator = allocator,
             .arena = null,
             .source = src,
-            .tokens = try TokenStream.init(src),
+            .tokens = try TokenStream.init(src, diags),
+            .diagnostics = diags,
         };
     }
 
@@ -80,7 +85,7 @@ pub const Parser = struct {
     }
 
     pub fn isAtEof(self: *Parser) bool {
-        return self.tokens.lookahead == null;
+        return self.tokens.lookahead.tag == .end_of_file;
     }
 
     pub fn nextIsNot(self: Parser, comptime tag: TokenTag) bool {
@@ -88,36 +93,14 @@ pub const Parser = struct {
     }
 
     pub fn nextIsNotOne(self: Parser, comptime tags: [] const TokenTag) bool {
-        if (self.tokens.lookahead) |next| {
-            inline for (tags) |tag| {
-                if (next.tag == tag) {
-                    return false;
-                }
+        inline for (tags) |tag| {
+            if (self.tokens.lookahead.tag == tag) {
+                return false;
             }
-            return true;
         }
-        else {
-            return true;
-        }
+        return true;
     }
 
-    pub fn nextIs(self: Parser, comptime tag: TokenTag) ?Token {
-        return self.nextIsOne(&.{tag});
-    }
-
-    pub fn nextIsOne(self: Parser, comptime tags: []const TokenTag) ?Token {
-        if (self.tokens.lookahead) |next| {
-            inline for (tags) |tag| {
-                if (next.tag == tag) {
-                    return next;
-                }
-            }
-            return null;
-        }
-        else {
-            return null;
-        }
-    }
 
     pub fn expect(self: *Parser, comptime tag: TokenTag) Error!Token {
         return self.expectOne(&.{tag});
@@ -152,17 +135,13 @@ pub const Parser = struct {
     }
 
     pub fn expectOneOpt(self: Parser, comptime tags: []const TokenTag) ?Token {
-        if (self.tokens.lookahead) |token| {
-            inline for (tags) |tag| {
-                if (token.tag == tag) {
-                    return token;
-                }
+        const next = self.tokens.lookahead;
+        inline for (tags) |tag| {
+            if (next.tag == tag) {
+                return next;
             }
-            return null;
         }
-        else {
-            return null;
-        }
+        return null;
     }
 
     pub fn accept(self: *Parser, comptime tag: TokenTag) Error!Token {
@@ -187,29 +166,20 @@ pub const Parser = struct {
         return token;
     }
 
-    fn sourceErrorUnexpectedToken(self: *Parser, token_or_eol: ?Token, comptime expected_desc: []const u8) void {
-        if (token_or_eol) |token| {
-            self.sourceError(token.text, "expected {s}, found \"{s}\"", .{expected_desc, token.text});
+    fn sourceErrorUnexpectedToken(self: *Parser, token: Token, comptime expected_desc: []const u8) void {
+        if (token.tag == .end_of_file){
+            self.sourceError(token.text, "expected {s}, found end of file", .{expected_desc});
         }
         else {
-            const lines = self.source.lines;
-            var i: usize = lines.len - 1;
-            const line: []const u8 = (
-                while (i >= 0) : (i -= 1) {
-                    if (lines[i].len > 0) {
-                        break lines[i];
-                    }
-                }
-                else lines[0]
-            );
-            const eol = if (line.len > 0) line[line.len - 1..] else line;
-            self.sourceError(eol, "expected {s}, found end of file", .{expected_desc});
+            self.sourceError(token.text, "expected {s}, found \"{s}\"", .{expected_desc, token.text});
         }
     }
 
     pub fn sourceError(self: *Parser, token: []const u8, comptime format: []const u8, args: anytype) void {
         self.error_count += 1;
-        log.sourceError(self.source, token, format, args);
+        if (self.diagnostics) |diags| {
+            diags.sourceErrorErrorPanic(&self.tokens.source, token, format, args);
+        }
     }
 
 };
@@ -299,7 +269,7 @@ const ast = struct {
         p: *Parser,
         comptime Node: type,
         comptime delim: TokenTag,
-        comptime end_predicate: fn (?Token) bool,
+        comptime end_predicate: fn (Token) bool,
         comptime allow_trailing: bool
     ) E![]const Node {
         const allocator = p.astAllocator();
@@ -348,15 +318,15 @@ const ast = struct {
         return items.toOwnedSlice(allocator);
     }
 
-    fn tagIsPredicate(comptime tag: TokenTag) fn(?Token) bool {
+    fn tagIsPredicate(comptime tag: TokenTag) fn(Token) bool {
         return tagIsOnePredicate(&.{tag});
     }
     
-    fn tagIsOnePredicate(comptime tags: []const TokenTag) fn(?Token) bool {
+    fn tagIsOnePredicate(comptime tags: []const TokenTag) fn(Token) bool {
         return struct {
-            fn f(next: ?Token) bool {
+            fn f(next: Token) bool {
                 inline for (tags) |tag| {
-                    if (next != null and next.?.tag == tag) {
+                    if (next.tag == tag) {
                         return true;
                     }
                 }
@@ -365,15 +335,15 @@ const ast = struct {
         }.f;
     }
 
-    fn tagIsNotPredicate(comptime tag: TokenTag) fn(?Token) bool {
+    fn tagIsNotPredicate(comptime tag: TokenTag) fn(Token) bool {
         return tagIsNotOnePredicate(&.{tag});
     }
 
-    fn tagIsNotOnePredicate(comptime tags: []const TokenTag) fn(?Token) bool {
+    fn tagIsNotOnePredicate(comptime tags: []const TokenTag) fn(Token) bool {
         return struct {
-            fn f(next: ?Token) bool {
+            fn f(next: Token) bool {
                 inline for (tags) |tag| {
-                    if (next != null and next.?.tag == tag) {
+                    if (next.tag == tag) {
                         return false;
                     }
                 }
@@ -382,16 +352,18 @@ const ast = struct {
         }.f;
     }
 
-    fn eofPredicate(next :?Token) bool {
-        return next == null;
+    fn eofPredicate(next: Token) bool {
+        return next.tag == .end_of_file;
     }
 
     pub const TopLevel = struct {
         decls: []const LetDecl,
 
         fn parse(p: *Parser) E!TopLevel {
+            const decls = try list(p, LetDecl);
+            _ = try p.expectOne(LetDecl.start_tags ++ &[_]TokenTag{ .end_of_file });
             return TopLevel {
-                .decls = try list(p, LetDecl),
+                .decls = decls,
             };
         }
 
@@ -499,7 +471,7 @@ const ast = struct {
                 }
             };
             const type_annotation = (
-                if (p.nextIs(.colon) != null)
+                if (p.expectOpt(.colon) != null)
                     try typeAnnotation(p)
                 else
                     null
@@ -554,6 +526,7 @@ const ast = struct {
         
         binary: Binary,
         unary: Unary,
+        cast: Cast,
         member_access: MemberAccess,
         param_eval: ParamEval,
         identifier: Token,
@@ -574,18 +547,30 @@ const ast = struct {
             binaryExpr(&.{ .plus, .minus}),
             binaryExpr(&.{ .aster, .fslash}),
             prefixExpr(prefix_start_tags),
-            paramEval,
-            memberAccess,
-            atom,
+            castExpr,
+            paramEvalExpr,
+            memberAccessExpr,
+            atomExpr,
         };
+
 
         fn parse(p: *Parser) E!Expr {
             return parseLevel(p, 0);
         }
 
-
         fn parseLevel(p: *Parser, level: usize) E!Expr {
             return parse_list[level](p, level);
+        }
+
+        fn parseNonOperator(p: *Parser) E!Expr {
+            const level: usize = comptime blk: {
+                for (parse_list) |expr_parser, i| {
+                    if (expr_parser == paramEvalExpr) {
+                        break :blk i;
+                    }
+                }
+            };
+            return parseLevel(p, level);
         }
 
         fn binaryExpr(comptime operators: []const TokenTag) ExprParser {
@@ -629,7 +614,23 @@ const ast = struct {
             }.f;
         }
 
-        fn memberAccess(p: *Parser, level: usize) E!Expr {
+        fn castExpr(p: *Parser, level: usize) E!Expr {
+            const subject = try parseLevel(p, level + 1);
+            if ((try p.acceptOpt(.kw_as)) != null) {
+                const target = try parseNonOperator(p);
+                return Expr {
+                    .cast = .{
+                        .subject = try heap(p, subject),
+                        .target = try heap(p, target),
+                    },
+                };
+            }
+            else {
+                return subject;
+            }
+        }
+
+        fn memberAccessExpr(p: *Parser, level: usize) E!Expr {
             const container = try parseLevel(p, level + 1);
             if ((try p.acceptOpt(.dot)) != null)  {
                 const member_name = try p.accept(.identifier);
@@ -645,7 +646,7 @@ const ast = struct {
             }
         }
 
-        fn paramEval(p: *Parser, level: usize) E!Expr {
+        fn paramEvalExpr(p: *Parser, level: usize) E!Expr {
             const subject = try parseLevel(p, level + 1);
             if ((try p.acceptOpt(.lparen)) != null)  {
                 const params = try delimitedList(p, Expr, .comma, comptime tagIsPredicate(.rparen), true);
@@ -665,7 +666,7 @@ const ast = struct {
             }
         }
 
-        fn atom(parser: *Parser, _: usize) E!Expr {
+        fn atomExpr(parser: *Parser, _: usize) E!Expr {
             const Atom = struct {
                 expr: Expr,
 
@@ -677,7 +678,7 @@ const ast = struct {
 
                 fn parse(p: *Parser) E!Atom {
                     const expr: Expr = blk: {
-                        if (p.nextIsOne(keyword_start_tags)) |token| {
+                        if (p.expectOneOpt(keyword_start_tags)) |token| {
                             switch (token.tag) {
                                 .kw_module => {
                                     break :blk Expr {
@@ -721,6 +722,7 @@ const ast = struct {
             switch (self) {
                 .binary => |binary| try binary.dump(w, level),
                 .unary => |unary| try unary.dump(w, level),
+                .cast => |cast| try cast.dump(w, level),
                 .member_access => |member_access| try member_access.dump(w, level),
                 .param_eval => |param_eval| try param_eval.dump(w, level),
                 .identifier => |identifier| try dumpToken(w, level, "identifier", identifier),
@@ -752,6 +754,18 @@ const ast = struct {
         fn dump(self: Unary, w: anytype, level: usize) @TypeOf(w).Error!void {
             try dumpToken(w, level, "unary", self.op);
             try self.subject.dump(w, level + 1);
+        }
+
+    };
+
+    pub const Cast = struct {
+        subject: *const Expr,
+        target: *const Expr,
+
+        fn dump(self: Cast, w: anytype, level: usize) @TypeOf(w).Error!void {
+            try writeIndent(w, level, "cast");
+            try self.subject.dump(w, level + 1);
+            try self.target.dump(w, level + 1);
         }
 
     };
