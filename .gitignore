@@ -2,4 +2,5 @@ zig-cache
 zig-out
 limbo
 server_out*
+server_err*
 dev

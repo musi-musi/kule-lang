@@ -5,6 +5,7 @@ const compiler = kule.compiler;
 
 const Allocator = std.mem.Allocator;
 
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -26,7 +27,9 @@ pub fn main() !void {
             }
         }
         else if (std.mem.eql(u8, action, "server")) {
-            try kule.server.run();
+            var server = try kule.server.Server.init(allocator);
+            defer server.deinit();
+            try server.run();
         }
     }
 }
@@ -57,3 +60,5 @@ fn parseFile(allocator: Allocator, path: []const u8) !void {
     try diagnostics.logMessages();
     return err orelse {};
 }
+
+pub const log = kule.server.log;

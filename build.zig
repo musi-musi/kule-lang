@@ -15,6 +15,7 @@ pub fn build(b: *std.build.Builder) void {
     
 
     const cli = cliStep(b, mode);
+    cli.install();
 
     const run_cmd = cli.run();
     run_cmd.step.dependOn(b.getInstallStep());
@@ -25,18 +26,16 @@ pub fn build(b: *std.build.Builder) void {
     const run_step = b.step("run", "Run the CLI");
     run_step.dependOn(&run_cmd.step);
 
-    const server = cliStep(b, mode);
-    server.setOutputDir("./dev");
-
-    // const install_dev = std.build.InstallFileStep.init(b, cli.install_name)
+    const dev_exe = cliStep(b, mode);
+    dev_exe.setOutputDir("./dev");
+    dev_exe.install();
 
     const dev_step = b.step("install-dev", "Build the CLI and install it in ./dev/");
-    dev_step.dependOn(&server.step);
+    dev_step.dependOn(&dev_exe.step);
 }
 
 fn cliStep(b: *std.build.Builder, mode: std.builtin.Mode) *std.build.LibExeObjStep {
     const cli = b.addExecutable("kule", "src/cli.zig");
     cli.setBuildMode(mode);
-    cli.install();
     return cli;
 }
