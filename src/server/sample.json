@@ -1,0 +1,99 @@
+{
+    "name": "kule",
+    "displayName": "kule shader language",
+    "description": "language support for the kule shader language",
+    "author": "sam lovelace",
+    "version": "0.0.1",
+    "publisher": "musimusi",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/musimusi/kule-vscode"
+    },
+    "engines": {
+        "vscode": "^1.69.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "icon": "./extension_icon.png",
+    "activationEvents": [
+        "workspaceContains:**.kule",
+        "onLanguage:kule"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "languages": [
+            {
+                "id": "kule",
+                "icon": {
+                    "dark": "./icon.png",
+                    "light": "./icon.png"
+                },
+                "aliases": [
+                    "kule",
+                    "kule"
+                ],
+                "extensions": [
+                    ".kule"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "kule",
+                "scopeName": "source.kule",
+                "path": "./syntaxes/kule.tmLanguage.json"
+            }
+        ],
+        "commands": [
+            {
+                "command": "kule.startServer",
+                "title": "Start kule language server",
+                "category": "kule"
+            },
+            {
+                "command": "kule.stopServer",
+                "title": "Stop kule language server",
+                "category": "kule"
+            },
+            {
+                "command": "kule.restartServer",
+                "title": "Restart kule language server",
+                "category": "kule"
+            }
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "kule",
+            "properties": {
+                "kule.serverPath": {
+                    "scope": "resource",
+                    "title": "kule language server executable path",
+                    "description": "Path to kule language server executable",
+                    "type": "string",
+                    "format": "path"
+                }
+            }
+        }
+    },
+    "dependencies": {
+        "@types/mkdirp": "^1.0.2",
+        "axios": "^0.27.2",
+        "mkdirp": "^1.0.4",
+        "vscode-languageclient": "8.0.2-next.5"
+    },
+    "devDependencies": {
+        "@types/glob": "^7.2.0",
+        "@types/mocha": "^9.1.1",
+        "@types/node": "^18.0.0",
+        "@types/vscode": "^1.68.0",
+        "@typescript-eslint/eslint-plugin": "^5.29.0",
+        "@typescript-eslint/parser": "^5.29.0",
+        "eslint": "^8.18.0",
+        "glob": "^8.0.3",
+        "mocha": "^10.0.0",
+        "typescript": "^4.7.4",
+        "vscode-test": "^1.3.0"
+    }
+}
