@@ -1,0 +1,8 @@
+{
+    "method": "textDocument/didOpen",
+	"id": 352,
+	"jsonrpc": "2.0",
+	"params": {
+		{ } [[{} {}] "[] {} [[[ [\" []])_{"] []["{}{}"{}{}]{}
+	}eop
+}eof

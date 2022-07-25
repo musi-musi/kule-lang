@@ -26,11 +26,6 @@ pub fn main() !void {
                 parseFile(allocator, arg) catch {};
             }
         }
-        else if (std.mem.eql(u8, action, "server")) {
-            var server = try kule.server.Server.init(allocator);
-            defer server.deinit();
-            try server.run();
-        }
     }
 }
 
@@ -60,5 +55,3 @@ fn parseFile(allocator: Allocator, path: []const u8) !void {
     try diagnostics.logMessages();
     return err orelse {};
 }
-
-pub const log = kule.server.log;
