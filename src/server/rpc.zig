@@ -3,7 +3,7 @@ const json = @import("json.zig");
 
 const ascii = std.ascii;
 
-const Jw = json.Walker;
+const Jw = json.Value;
 
 const Allocator = std.mem.Allocator;
 const File = std.fs.File;
@@ -30,16 +30,11 @@ pub const In = struct {
 
 };
 
-pub const Id = union(enum) {
-    integer: int,
-    string: []const u8,
-};
-
 pub const Message = struct {
-    id: ?Id = null,
+    id: ?json.Value = null,
     method: []const u8 = undefined,
-    params: ?json.Walker = null,
-    full_text: []const u8,
+    params: ?json.Value = null,
+    full_text: []const u8 = undefined,
 
     pub const Error = error {
         EndOfStream,
@@ -60,52 +55,7 @@ pub const Message = struct {
         errdefer allocator.free(text);
         text[0] = c;
         _ = try reader.readAll(text[1..]);
-        var walker = json.walk(text);
-        if (walker.nextFields()) {
-            var message = Message {
-                .full_text = text,
-            };
-            const names = &[_][] const u8{
-                "id", "method", "params",
-            };
-            while (walker.findFieldNames(names)) |field| {
-                switch (field.name) {
-                    .id => {
-                        message.id = switch (field.tag orelse .null_value) {
-                            .number => (
-                                if (walker.read(int)) |i| .{
-                                    .integer = i,
-                                } else null
-                            ),
-                            .string => (
-                                if (walker.read([]const u8)) |s| .{
-                                    .string = s,
-                                } else null
-                            ),
-                            else => null,
-                        };
-                    },
-                    .method => {
-                        message.method = walker.read([]const u8) orelse {
-                            return Error.MissingMethodName;
-                        };
-                    },
-                    .params => {
-                        switch (field.tag orelse .null_value) {
-                            .object, .array => {
-                                message.params = walker.forkFields();
-                            },
-                            else => {},
-                        }
-                        return message;
-                    },
-                }
-            }
-            return message;
-        }
-        else {
-            return Error.MissingJsonData;
-        }
+        return json.parse(text, Message) orelse Error.MissingJsonData;
     }
 
     pub fn deinit(self: Message, allocator: Allocator) void {

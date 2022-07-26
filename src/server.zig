@@ -13,13 +13,10 @@ pub fn main() !void {
     const message = try rpc.Message.init(allocator, stdin);
     std.log.info("recieved:", .{});
     if (message.id) |id| {
-        switch (id) {
-            .integer => |int| std.log.info("id: {d}", .{int}),
-            .string => |str| std.log.info("id: {s}", .{str}),
-        }
+        std.log.info("id: {s}", .{id.text});
     }
     std.log.info("method: {s}", .{message.method});
-    if (message.params) |_| {
-        std.log.info("params: (...)", .{});
+    if (message.params) |params| {
+        std.log.info("params: {s}", .{params.text});
     }
 }

@@ -49,6 +49,10 @@ pub const Tag = enum {
 
 };
 
+pub const StringEscapeMode = enum {
+    raw, unescaped,
+};
+
 const CharTable = [256]bool;
 
 fn charTable(comptime class: []const u8) CharTable {
@@ -61,53 +65,45 @@ fn charTable(comptime class: []const u8) CharTable {
     }
 }
 
-const char_tables = struct {
-    const numerical = charTable("-0123456789eE.");
-};
 
-
-pub fn walk(json: []const u8) Walker {
-    return Walker.init(json);
+pub fn parse(json: []const u8, comptime T: type) ?Value.Read(T) {
+    var value = Value.init(json);
+    return value.parse(T);
 }
 
 /// walks a json source text in a static buffer, allowing for fast data extraction without allocations
-pub const Walker = struct {
+pub const Value = struct {
     
-    text: []const u8 = "",
+    text: []const u8,
     tag: ?Tag = null,
     i: usize = 0,
 
     const Self = @This();
 
     pub fn init(text: []const u8) Self {
-        return Self {
+        var self = Self {
             .text = text,
         };
+        _ = self.next();
+        return self;
     }
 
-    pub fn fork(self: Self) Self {
+    pub fn is(self: Self, tag: Tag) bool {
+        return self.tag == tag;
+    }
+
+    fn fork(self: Self) Self {
         return init(self.text[self.i..]);
     }
 
-    pub fn forkFields(self: Self) Self {
-        var child = self;
-        child.fields();
-        return child.fork();
-    }
-
-    pub fn join(self: *Self, child: Walker) void {
+    fn join(self: *Self, child: Value) void {
         const self_addr = @ptrToInt(&self.text[self.i]);
         const child_walker_addr = @ptrToInt(&child.text[self.i]);
         assert(child_walker_addr > self_addr);
         self.i += child_walker_addr - self_addr;
     }
 
-    pub fn joinRest(self: *Self, child: Walker) void {
-        self.join(child);
-        self.rest();
-    }
-
-    pub fn char(self: Self) ?u8 {
+    fn char(self: Self) ?u8 {
         if (self.i < self.text.len) {
             return self.text[self.i];
         }
@@ -123,9 +119,13 @@ pub const Walker = struct {
                     self.i += len + 1;
                     break :blk null;
                 }
-                else if (Tag.char_map[c]) |t| {
+                else if (Tag.char_map[c]) |tag| {
                     self.i += len;
-                    break :blk t;
+                    switch (tag) {
+                        .object, .array, .string => self.i += 1,
+                        else => {},
+                    }
+                    break :blk tag;
                 }
             }
             self.i = self.text.len;
@@ -134,114 +134,123 @@ pub const Walker = struct {
         return self.tag;
     }
 
-    pub fn skip(self: *Self) void {
-        if (self.tag) |t| {
-            switch (t) {
-                .object, .array => {
-                    self.fields();
-                    self.rest();
-                },
-                .string => {
-                    self.i += 1;
-                    self.stringRest();
-                },
-                else => {},
-            }
-        }
-        self.skipUntilChars(":,}]");
-    }
-
     pub fn skipNext(self: *Self) void {
         if (self.next() != null) {
             self.skip();
         }
     }
 
-    pub fn fields(self: *Self) void {
-        self.i += 1;
-    }
-
-    pub fn nextFields(self: *Self) bool {
-        switch (self.next() orelse .null_value) {
-            .object, .array => {
-                self.fields();
-                return true;
-            },
-            else => {
-                return false;
-            },
-        }
-    }
-
-    pub fn rest(self: *Self) void {
+    pub fn skip(self: *Self) void {
         const text = self.text;
-        var depth: usize = 1;
-        while (depth > 0 and self.i < text.len) {
-            self.skipUntilChars("\"[]{}");
-            switch (self.char() orelse 0) {
-                '[', '{' => depth += 1,
-                ']', '}' => depth -= 1,
-                '\"' => {
-                    self.i += 1;
-                    self.stringRest();
+        if (self.tag) |tag| {
+            switch (tag) {
+                .object, .array => {
+                    var depth: usize = 1;
+                    while (depth > 0 and self.i < text.len) {
+                        self.skipUntilChars("\"[]{}");
+                        switch (self.char() orelse 0) {
+                            '[', '{' => depth += 1,
+                            ']', '}' => depth -= 1,
+                            '\"' => {
+                                self.tag = .string;
+                                self.skip();
+                            },
+                            else => {},
+                        }
+                        self.i += 1;
+                    }
                 },
-                else => {},
+                .string => {
+                    while (self.nextCharRaw() != null) {}
+                },
+                .number => self.skipManyClass("-0123456789eE."),
+                .boolean => self.skipManyClass("truefalse"),
+                .null_value => self.skipManyClass("null"),
             }
-            self.i += 1;
+        }
+        self.tag = null;
+    }
+
+    fn token(self: *Self) []const u8 {
+        const start = self.i;
+        self.skip();
+        return self.text[start..self.i];
+    }
+
+    fn Read(comptime T: type) type {
+        if (comptime std.meta.trait.is(.Optional)(T)) {
+            return std.meta.Child(T);
+        }
+        else {
+            return T;
         }
     }
 
-    pub fn readNext(self: *Self, comptime T: type) ?T {
-        if (self.next() != null)  {
-            return self.read(T);
+
+    pub fn parseNext(self: *Self, comptime T: type) ?Read(T) {
+        if (self.next() != null) {
+            return self.parse(T);
         }
         else {
             return null;
         }
     }
 
-    pub fn read(self: *Self, comptime T: type) ?T {
+    pub fn parse(self: *Self, comptime T: type) ?Read(T) {
         const trait = std.meta.trait;
-        if (self.tag) |t| {
-            if (T == Self)  {
-                switch (t) {
-                    .object, .array => {
-                        const child = self.forkFields();
-                        self.skip();
-                        return child;
-                    },
-                    else => return null,
-                }
+        if (comptime trait.is(.Optional)(T)) {
+            return self.parse(Read(T));
+        }
+        if (self.tag) |tag| {
+            switch (T) {
+                Self => {
+                    const is_container = switch (tag) {
+                        .object, .array, .string => true,
+                        else => false,
+                    };
+                    if (is_container) self.i -= 1;
+                    const start = self.i;
+                    var child = self.fork();
+                    if (is_container) self.i += 1;
+                    self.skip();
+                    child.text.len = self.i - start;
+                    return child;
+                },
+                else => {},
             }
-            switch (t) {
+            switch (tag) {
                 .object => {
-                    return null;
+                    if (comptime trait.is(.Struct)(T) and !trait.isTuple(T)) {
+                        return self.parseStruct(T);
+                    }
+                    else {
+                        return null;
+                    }
                 },
                 .array => {
-                    return null;
+                    if (comptime trait.is(.Struct)(T) and trait.isTuple(T)) {
+                        return self.parseTuple(T);
+                    }
+                    else {
+                        return null;
+                    }
                 },
                 .string => if (comptime trait.isZigString(T)) {
-                    self.i += 1;
-                    const start = self.i;
-                    while (self.stringNextRaw() != null) {}
-                    const str = self.text[start..(self.i - 1)];
-                    self.i += 1;
-                    return str;
+                    const str = self.token();
+                    return str[0..str.len - 1];
                 },
                 .number => if (comptime trait.isNumber(T)) {
-                    const token = self.readManyTable(char_tables.numerical);
                     switch (@typeInfo(T)) {
-                        .Int => return std.fmt.parseInt(T, token, 10) catch null,
-                        .Float => return std.fmt.parseFloat(T, token) catch null,
+                        .Int => return std.fmt.parseInt(T, self.token(), 10) catch null,
+                        .Float => return std.fmt.parseFloat(T, self.token()) catch null,
                         else => unreachable,
                     }
                 },
                 .boolean, => if (T == bool) {
-                    const token = self.readManyChars("truefalse");
-                    return token[0] == 't';
+                    return self.token()[0] == 't';
                 },
                 .null_value => if (T == void) {
-                    self.skipManyClass("null");
+                    self.skip();
                     return {};
                 },
             }
@@ -249,14 +258,78 @@ pub const Walker = struct {
         return null;
     }
 
+    fn parseStruct(self: *Self, comptime S: type) S {
+        const fields = std.meta.fields(S);
+        const field_names: []const []const u8 = comptime blk: {
+            var names: [fields.len][]const u8 = undefined;
+            for (fields) |field, i| {
+                names[i] = field.name;
+            }
+            break :blk &names;
+        };
+        const field_readers = fieldReaders(S);
+        var value: S = .{};
+        while (self.next() != null) {
+            if (self.matchNames(field_names)) |i| {
+                field_readers[i](self, &value);
+            }
+            else {
+                self.skipNext();
+            }
+        }
+        self.skip();
+        return value;
+    }
+
+    fn parseTuple(self: *Self, comptime T: type) T {
+        const readers = FieldReaders(T);
+        var value: T = .{};
+        for (readers) |reader| {
+            if (self.next() != null) {
+                reader(self, &value);
+            }
+        }
+        self.skip();
+        return value;
+    }
+
+
+    fn FieldReader(comptime S: type) type {
+        return fn (*Self, *S) void;
+    }
+
+    fn FieldReaders(comptime S: type) type {
+        return [std.meta.fields(S).len]FieldReader(S);
+    }
+
+    fn fieldReader(comptime S: type, comptime name: []const u8, comptime F: type) FieldReader(S) {
+        return struct {
+            fn f(self: *Self, value: *S) void {
+                if (self.parseNext(F)) |field_value| {
+                    @field(value, name) = field_value;
+                }
+            }
+        }.f;
+    }
+
+    fn fieldReaders(comptime S: type) FieldReaders(S) {
+        comptime {
+
+            var readers: FieldReaders(S) = undefined;
+            for (std.meta.fields(S)) |field, i| {
+                readers[i] = fieldReader(S, field.name, field.field_type);
+            }
+            return readers;
+        }
+    }
+
 
     pub fn matchName(self: *Self, comptime name: []const u8) bool {
         const escaped_name = comptimeEscapeString(name);
-        var str = self.stringRaw();
         var i: usize = 0;
-        while (str.next()) |c| {
+        while (self.nextCharRaw()) |c| {
             if (escaped_name[i] != c) {
-                str.rest();
+                self.rest();
                 return false;
             }
         }
@@ -268,27 +341,7 @@ pub const Walker = struct {
         }
     }
 
-    pub fn NamesEnum(comptime names: []const []const u8) type {
-        const Field = std.builtin.TypeInfo.EnumField;
-        var enum_fields: [names.len]Field = undefined;
-        for (names) |name, i| {
-            enum_fields[i] = .{
-                .name = name,
-                .value = i,
-            };
-        }
-        return @Type(.{
-            .Enum = .{
-                .layout = .Auto,
-                .tag_type = usize,
-                .fields = &enum_fields,
-                .decls = &.{},
-                .is_exhaustive = true,
-            },
-        });
-    }
-
-    pub fn matchNames(self: *Self, comptime names: []const []const u8) ?NamesEnum(names) {
+    pub fn matchNames(self: *Self, comptime names: []const []const u8) ?usize {
         const map = comptime blk: {
             const Pair = std.meta.Tuple(&.{[]const u8, usize});
             var pairs: [names.len]Pair = undefined;
@@ -297,9 +350,9 @@ pub const Walker = struct {
             }
             break :blk std.ComptimeStringMap(usize, pairs);
         };
-        if (self.read([]const u8)) |str| {
+        if (self.parse([]const u8)) |str| {
             if (map.get(str)) |index| {
-                return @intToEnum(NamesEnum(names), index);
+                return index;
             }
             else {
                 return null;
@@ -311,102 +364,7 @@ pub const Walker = struct {
 
     }
 
-    pub fn findFieldName(self: *Self, comptime name: []const u8) ?Tag {
-        while (self.next()) |t| {
-            if (t == .string) {
-                if (self.matchName(name)) {
-                    return self.next();
-                }
-                else {
-                    self.skipNext();
-                }
-            }
-            else {
-                self.skip();
-            }
-        }
-        return false;
-    }
-
-    pub fn ObjectField(comptime names: []const []const u8) type {
-        return struct {
-            name: NamesEnum(names),
-            tag: ?Tag,
-        };
-    }
-
-    pub fn findFieldNames(self: *Self, comptime names: []const []const u8) ?ObjectField(names) {
-        while (self.next()) |t| {
-            if (t == .string) {
-                if (self.matchNames(names)) |name| {
-                    return ObjectField(names) {
-                        .name = name,
-                        .tag = self.next(),
-                    };
-                }
-                else {
-                    self.skipNext();
-                }
-            }
-            else {
-                self.skip();
-            }
-        }
-        return null;
-    }
-
-
-
-    pub const StringEscapeMode = enum {
-        raw, unescaped,
-    };
-
-    // if the next value is a string, return an iterator over it.
-    // `self`'s state remains unchanged
-    // returns null if the next value is not a string
-    pub fn stringMode(self: *Self, comptime mode: StringEscapeMode) StringIterator(mode) {
-        self.i += 1;
-        return StringIterator(mode) {
-            .start = self.i,
-            .walker = self,
-        };
-    }
-
-    pub fn stringRaw(self: *Self) RawStringIterator
-        { return self.stringMode(.raw); }
-    pub fn string(self: *Self) UnescapedStringIterator
-        { return self.stringMode(.unescaped); }
-
-    pub const RawStringIterator = StringIterator(.raw);
-    pub const UnescapedStringIterator = StringIterator(.unescaped);
-
-    pub fn StringIterator(comptime mode: StringEscapeMode) type {
-        return struct {
-            start: usize,
-            walker: *Walker,
-
-            const StrIter = @This();
-
-            pub fn reset(iter: *StrIter) void {
-                iter.walker.i = iter.start;
-            }
-
-            pub fn next(iter: *StrIter) ?u8 {
-                const c = iter.walker.stringNextMode(mode);
-                if (c == null) {
-                    iter.walker.i += 1;
-                }
-                return c;
-            }
-
-            pub fn rest(iter: *StrIter) void {
-                iter.walker.stringRest();
-            }
-        };
-    }
-
-
-    fn stringNextMode(self: *Self, comptime mode: StringEscapeMode) ?u8 {
+    fn nextCharMode(self: *Self, comptime mode: StringEscapeMode) ?u8 {
         const text = self.text;
         if (self.i < text.len) {
             const c = text[self.i];
@@ -452,14 +410,14 @@ pub const Walker = struct {
         }
     }
 
-    fn stringNextRaw(self: *Self) ?u8
-        { return self.stringNextMode(.raw); }
+    fn nextCharRaw(self: *Self) ?u8
+        { return self.nextCharMode(.raw); }
 
-    fn stringNext(self: *Self) ?u8
-        { return self.stringNextMode(.unescaped); }
+    fn nextChar(self: *Self) ?u8
+        { return self.nextCharMode(.unescaped); }
 
     fn stringRest(self: *Self) void {
-        while (self.stringNextMode(.raw) != null) {}
+        while (self.nextCharMode(.raw) != null) {}
     }
 
 
@@ -533,10 +491,9 @@ pub const Walker = struct {
     }
 
     fn dumpRecr(self: *Self, writer: anytype, depth: usize) @TypeOf(writer).Error!void {
-        if (self.next()) |t| {
-            switch (t) {
+        if (self.next()) |tag| {
+            switch (tag) {
                 .object => {
-                    self.fields();
                     try writer.writeAll("{\n");
                     var i: usize = 0;
                     while (self.next() != null) : (i += 1) {
@@ -551,7 +508,6 @@ pub const Walker = struct {
                     try writer.writeByte('}');
                 },
                 .array => {
-                    self.fields();
                     try writer.writeAll("[\n");
                     var i: usize = 0;
                     while (self.next() != null) : (i += 1) {
@@ -564,20 +520,19 @@ pub const Walker = struct {
                     try writer.writeByte(']');
                 },
                 .string => {
-                    var str = self.stringRaw();
                     try writer.writeByte('\"');
-                    while (str.next()) |c| {
+                    while (self.nextChar()) |c| {
                         try writer.writeByte(c);
                     }
                     try writer.writeByte('\"');
                 },
                 .number => {
-                    if (self.read(f64)) |n| {
+                    if (self.parse(f64)) |n| {
                         try writer.print("{d}\n", .{n});
                     }
                 },
                 .boolean => {
-                    if (self.read(bool)) |b| {
+                    if (self.parse(bool)) |b| {
                         try writer.print("{}\n", .{b});
                     }
                 },
