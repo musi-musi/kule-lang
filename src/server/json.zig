@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Allocator = std.mem.Allocator;
+
 const assert = std.debug.assert;
 // so i set out to make language server and i accidentally a whole json parser
 // none of this has been tested yet lmao
@@ -8,21 +10,74 @@ pub fn comptimeEscapeString(comptime string: []const u8) []const u8 {
     comptime {
         var escaped: []const u8 = "";
         for (string) |c| {
-            const append = switch (c) {
-                '"' => "\\\"",
-                '\\' => "\\\\",
-                '/' => "\\/",
-                0x08, => "\\b",
-                0x0c, => "\\f",
-                '\n' => "\\n",
-                '\r' => "\\r",
-                '\t' => "\\t",
-                else => if (c < 128) &[_]u8{c} else "?",
-            };
-            escaped = escaped ++ append;
+            if (c >= 128) {
+                @compileError("cannot escape non-ascii string for json (unimplemented)");
+            }
+            if (escapeChar(c)) |esc| {
+                escaped = escaped ++ esc;
+            }
+            else {
+                escaped = escaped ++ &[_]u8{ c };
+            }
         }
         return escaped;
     }
+}
+
+pub fn escapeChar(c: u8) ?[]const u8 {
+    return switch (c) {
+        '"' => "\\\"",
+        '\\' => "\\\\",
+        // '/' => "\\/",
+        0x08, => "\\b",
+        0x0c, => "\\f",
+        '\n' => "\\n",
+        '\r' => "\\r",
+        '\t' => "\\t",
+        else => null,
+    };
+}
+
+pub fn EscapedStringWriter(comptime Writer: type) type {
+    return std.io.Writer(Writer, Writer.Error, struct {
+        fn writeFn(writer: Writer, bytes: []const u8) Writer.Error!usize {
+            for (bytes) |c| {
+                if (escapeChar(c)) |esc| {
+                    try writer.writeAll(esc);
+                }
+                else {
+                    try writer.writeByte(c);
+                }
+            }
+            return bytes.len;
+        }
+    }.writeFn);
+}
+
+pub fn escapedStringWriter(writer: anytype) EscapedStringWriter(@TypeOf(writer)) {
+    return .{
+        .context = writer
+    };
+}
+
+pub fn printEscaped(writer: anytype, comptime format: []const u8, args: anytype) @TypeOf(writer).Error!void {
+    try escapedStringWriter(writer).print(format, args);
+}
+
+pub fn enumAsIntMixin(comptime E: type) type {
+    return struct {
+        pub fn fromJson(value: *Value) ?E {
+            if (value.parse(std.meta.Tag(E))) |i| {
+                return @intToEnum(E, i);
+            }
+            else {
+                return null;
+            }
+        }
+        pub fn toJson(self: E, writer: ValueWriter) !void{
+            try writer.number(@enumToInt(self));
+        }
+    };
 }
 
 pub const Tag = enum {
@@ -71,7 +126,7 @@ pub fn parse(json: []const u8, comptime T: type) ?Value.Read(T) {
     return value.parse(T);
 }
 
-/// walks a json source text in a static buffer, allowing for fast data extraction without allocations
+/// walks a json source in a static buffer, allowing for fast data extraction without allocations
 pub const Value = struct {
     
     text: []const u8,
@@ -87,6 +142,11 @@ pub const Value = struct {
         _ = self.next();
         return self;
     }
+
+    // pub fn format(self: Self, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        
+    // }
+
 
     pub fn is(self: Self, tag: Tag) bool {
         return self.tag == tag;
@@ -218,6 +278,15 @@ pub const Value = struct {
             return self.parse(Read(T));
         }
         if (self.tag) |tag| {
+            switch (@typeInfo(T)) {
+                .Struct, .Union, .Enum => {
+                    if (@hasDecl(T, "fromJson")) {
+                        is_parseable = true;
+                        return T.fromJson(self);
+                    }
+                },
+                else => {},
+            }
             switch (T) {
                 Self => {
                     is_parseable = true;
@@ -286,7 +355,7 @@ pub const Value = struct {
             break :blk &names;
         };
         const field_readers = fieldReaders(S);
-        var value: S = .{};
+        var value = comptime std.mem.zeroes(S);
         while (self.next() != null) {
             if (self.matchNames(field_names)) |i| {
                 field_readers[i](self, &value);
@@ -300,7 +369,7 @@ pub const Value = struct {
 
     fn parseTuple(self: *Self, comptime T: type) T {
         const readers = FieldReaders(T);
-        var value: T = .{};
+        var value = comptime std.mem.zeroes(T);
         for (readers) |reader| {
             if (self.next() != null) {
                 reader(self, &value);
@@ -560,5 +629,183 @@ pub const Value = struct {
             }
         }
     }
+
+};
+
+
+pub fn serialize(allocator: Allocator, item: anytype) ValueWriter.Error![]const u8 {
+    var writer = ValueWriter.init(allocator);
+    try writer.append(item);
+    return writer.toOwnedString();
+}
+
+pub const ValueWriter = struct {
+
+    buffer: Buffer,
+
+    const Buffer = std.ArrayList(u8);
+    const Writer = Buffer.Writer;
+
+    pub const Error = Buffer.Writer.Error;
+    
+    const Self = @This();
+
+    pub fn init(allocator: Allocator) Self {
+        return Self {
+            .buffer = Buffer.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: Self) void {
+        self.buffer.deinit();
+    }
+
+    pub fn text(self: Self) []const u8 {
+        return self.buffer.items;
+    }
+
+    pub fn toOwnedString(self: *Self) []const u8 {
+        return self.buffer.toOwnedSlice();
+    }
+
+    pub fn append(self: *Self, item: anytype) Error!void {
+        const T = @TypeOf(item);
+        const meta = std.meta;
+        const trait = meta.trait;
+        switch (@typeInfo(T)) {
+            .Struct, .Union, .Enum => {
+                if (@hasDecl(T, "toJson")) {
+                    try item.toJson(self);
+                    return;
+                }
+            },
+            else => {},
+        }
+        switch (T) {
+            Value => return self.write(item.buffer),
+            bool => return self.boolean(item),
+            void => return self.nullValue(),
+            comptime_int, comptime_float => return self.number(item),
+            else => {},
+        }
+        if (comptime trait.isZigString(T)) {
+            return self.string(item);
+        }
+        switch (@typeInfo(T)) {
+            .Struct => |Struct| {
+                const fields = Struct.fields;
+                if (fields.len == 0) {
+                    try self.write("{}");
+                }
+                else if (Struct.is_tuple) {
+                    try self.array();
+                    inline for (fields) |field| {
+                        try self.next();
+                        try self.append(@field(item, field.name));
+                    }
+                    try self.arrayEnd();
+                }
+                else {
+                    try self.object();
+                    inline for (fields) |field| {
+                        const field_value = @field(item, field.name);
+                        if (shouldEncodeField(field.name, field_value)) {
+                            try self.fieldName(field.name);
+                            try self.append(field_value);
+                        }
+                    }
+                    try self.objectEnd();
+                }
+                return;
+            },
+            .Int, .Float,  => {
+                return self.number(item);
+            },
+            .Optional => {
+                if (item != null)  {
+                    return self.append(item.?);
+                }
+                else {
+                    return self.nullValue();
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn shouldEncodeField(comptime name: []const u8, value: anytype) bool {
+        return (
+            @typeInfo(@TypeOf(value)) != .Optional
+            or name[name.len - 1] != '?'
+            or value != null
+        );
+    }
+
+    pub fn write(self: *Self, buffer: []const u8) Error!void {
+        try self.buffer.writer().writeAll(buffer);
+    }
+
+    pub fn print(self: *Self, comptime format: []const u8, args: anytype) Error!void {
+        try self.buffer.writer().print(format, args);
+    }
+
+    fn next(self: *Self) Error!void {
+        const txt = self.buffer.items;
+        const len = txt.len;
+        const no_comma = charTable(":{[");
+        if (len > 0 and !no_comma[txt[len-1]]) {
+            try self.write(",");
+        }
+    }
+
+    pub fn object(self: *Self) Error!void {
+        try self.next();
+        try self.write("{");
+    }
+
+    pub fn objectEnd(self: *Self) Error!void {
+        try self.write("}");
+    }
+
+    pub fn array(self: *Self) Error!void {
+        try self.next();
+        try self.write("[");
+    }
+
+    pub fn arrayEnd(self: *Self) Error!void {
+        try self.write("]");
+    }
+
+    pub fn string(self: *Self, str: []const u8) Error!void {
+        try self.stringFormat("{s}", .{str});
+    }
+
+    pub fn stringFormat(self: *Self, comptime format: []const u8, args: anytype) Error!void {
+        try self.next();
+        try self.write("\"");
+        try printEscaped(self.buffer.writer(), format, args);
+        try self.write("\"");
+    }
+
+    pub fn number(self: *Self, num: anytype) Error!void {
+        try self.next();
+        try self.print("{d}", .{num});
+    }
+
+    pub fn boolean(self: *Self, b: bool) Error!void {
+        try self.next();
+        try self.print("{}", .{b});
+    }
+
+    pub fn nullValue(self: *Self) Error!void {
+        try self.next();
+        try self.write("null");
+    }
+    
+    pub fn fieldName(self: *Self, name: []const u8) Error!void {
+        try self.string(name);
+        try self.write(":");
+    }
+
 
 };

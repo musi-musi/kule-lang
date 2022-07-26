@@ -11,7 +11,7 @@ const Allocator = std.mem.Allocator;
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    var server = try Server.init(allocator);
+    var server = Server.init(allocator);
     defer server.deinit();
     try server.run();
 }
