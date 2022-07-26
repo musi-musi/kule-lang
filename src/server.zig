@@ -1,4 +1,6 @@
 const std = @import("std");
+
+const Server = @import("server/server.zig").Server;
 const json = @import("server/json.zig");
 const rpc = @import("server/rpc.zig");
 
@@ -9,14 +11,7 @@ const Allocator = std.mem.Allocator;
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
-    const stdin = std.io.getStdIn().reader();
-    const message = try rpc.Message.init(allocator, stdin);
-    std.log.info("recieved:", .{});
-    if (message.id) |id| {
-        std.log.info("id: {s}", .{id.text});
-    }
-    std.log.info("method: {s}", .{message.method});
-    if (message.params) |params| {
-        std.log.info("params: {s}", .{params.text});
-    }
+    var server = try Server.init(allocator);
+    defer server.deinit();
+    try server.run();
 }

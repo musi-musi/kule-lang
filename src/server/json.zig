@@ -113,6 +113,10 @@ pub const Value = struct {
     }
 
     pub fn next(self: *Self) ?Tag {
+        if (self.i >= self.text.len) {
+            self.i = self.text.len;
+            return null;
+        }
         self.tag = blk: {
             for (self.text[self.i..]) |c, len| {
                 if (charTable("}]")[c]) {
@@ -141,24 +145,10 @@ pub const Value = struct {
     }
 
     pub fn skip(self: *Self) void {
-        const text = self.text;
         if (self.tag) |tag| {
             switch (tag) {
                 .object, .array => {
-                    var depth: usize = 1;
-                    while (depth > 0 and self.i < text.len) {
-                        self.skipUntilChars("\"[]{}");
-                        switch (self.char() orelse 0) {
-                            '[', '{' => depth += 1,
-                            ']', '}' => depth -= 1,
-                            '\"' => {
-                                self.tag = .string;
-                                self.skip();
-                            },
-                            else => {},
-                        }
-                        self.i += 1;
-                    }
+                    self.skipRest();
                 },
                 .string => {
                     while (self.nextCharRaw() != null) {}
@@ -171,8 +161,32 @@ pub const Value = struct {
         self.tag = null;
     }
 
+    pub fn skipRest(self: *Self) void {
+        const text = self.text;
+        var depth: usize = 1;
+        while (depth > 0 and self.i < text.len) {
+            self.skipUntilChars("\"[]{}");
+            const c = self.char() orelse 0;
+            if (c != '\"') {
+                self.i += 1;
+            }
+            switch (c) {
+                '[', '{' => depth += 1,
+                ']', '}' => depth -= 1,
+                '\"' => {
+                    self.tag = .string;
+                    self.skip();
+                },
+                else => {},
+            }
+        }
+    }
+
     fn token(self: *Self) []const u8 {
-        const start = self.i;
+        const start = switch (self.tag.?) {
+            .object, .array, .string, => self.i - 1,
+            else => self.i,
+        };
         self.skip();
         return self.text[start..self.i];
     }
@@ -197,23 +211,18 @@ pub const Value = struct {
     }
 
     pub fn parse(self: *Self, comptime T: type) ?Read(T) {
+        comptime var is_parseable = false;
         const trait = std.meta.trait;
         if (comptime trait.is(.Optional)(T)) {
+            is_parseable = true;
             return self.parse(Read(T));
         }
         if (self.tag) |tag| {
             switch (T) {
                 Self => {
-                    const is_container = switch (tag) {
-                        .object, .array, .string => true,
-                        else => false,
-                    };
-                    if (is_container) self.i -= 1;
-                    const start = self.i;
-                    var child = self.fork();
-                    if (is_container) self.i += 1;
-                    self.skip();
-                    child.text.len = self.i - start;
+                    is_parseable = true;
+                    const text = self.token();
+                    var child = init(text);
                     return child;
                 },
                 else => {},
@@ -221,6 +230,7 @@ pub const Value = struct {
             switch (tag) {
                 .object => {
                     if (comptime trait.is(.Struct)(T) and !trait.isTuple(T)) {
+                        is_parseable = true;
                         return self.parseStruct(T);
                     }
                     else {
@@ -229,6 +239,7 @@ pub const Value = struct {
                 },
                 .array => {
                     if (comptime trait.is(.Struct)(T) and trait.isTuple(T)) {
+                        is_parseable = true;
                         return self.parseTuple(T);
                     }
                     else {
@@ -236,10 +247,12 @@ pub const Value = struct {
                     }
                 },
                 .string => if (comptime trait.isZigString(T)) {
+                    is_parseable = true;
                     const str = self.token();
-                    return str[0..str.len - 1];
+                    return str[1..str.len - 1];
                 },
                 .number => if (comptime trait.isNumber(T)) {
+                    is_parseable = true;
                     switch (@typeInfo(T)) {
                         .Int => return std.fmt.parseInt(T, self.token(), 10) catch null,
                         .Float => return std.fmt.parseFloat(T, self.token()) catch null,
@@ -247,13 +260,18 @@ pub const Value = struct {
                     }
                 },
                 .boolean, => if (T == bool) {
+                    is_parseable = true;
                     return self.token()[0] == 't';
                 },
                 .null_value => if (T == void) {
+                    is_parseable = true;
                     self.skip();
                     return {};
                 },
             }
+        }
+        if (!is_parseable) {
+            @compileError("cannot parse " ++ @typeName(T) ++ ". consider using json.Value and parsing manually");
         }
         return null;
     }
@@ -277,7 +295,6 @@ pub const Value = struct {
                 self.skipNext();
             }
         }
-        self.skip();
         return value;
     }
 
@@ -289,7 +306,7 @@ pub const Value = struct {
                 reader(self, &value);
             }
         }
-        self.skip();
+        // self.skipRest();
         return value;
     }
 
