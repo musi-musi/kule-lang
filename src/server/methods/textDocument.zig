@@ -11,9 +11,13 @@ pub fn @"textDocument/didOpen"(s: *Server, request: Request) !void {
     if (request.params(struct {
         textDocument: struct {
             uri: []const u8,
+            text: json.String,
         },
     })) |p| {
-        try s.log(.log, "opened {s}", .{p.textDocument.uri});
+        const uri = p.textDocument.uri;
+        const text = p.textDocument.text;
+        const file = try s.workspace.addOrUpdateFile(uri, text);
+        try s.log(.log, "open {s}", .{file.name});
     }
 }
 
@@ -23,13 +27,25 @@ pub fn @"textDocument/didClose"(s: *Server, request: Request) !void {
             uri: []const u8,
         },
     })) |p| {
-        try s.log(.log, "closed {s}", .{p.textDocument.uri});
+        const uri = p.textDocument.uri;
+        if (s.workspace.removeFile(uri)) {
+            try s.log(.log, "remove file {s}", .{uri});
+        }
     }
 }
 
 pub fn @"textDocument/didChange"(s: *Server, request: Request) !void {
-    _ = s;
-    _ = request;
+    if (request.params(struct {
+        textDocument: struct {
+            uri: []const u8,
+            text: json.String,
+        },
+    })) |p| {
+        const uri = p.textDocument.uri;
+        const text = p.textDocument.text;
+        const file = try s.workspace.addOrUpdateFile(uri, text);
+        try s.log(.log, "update {s}", .{file.name});
+    }
 }
 
 pub fn @"textDocument/didSave"(s: *Server, request: Request) !void {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const rpc = @import("rpc.zig");
 const json = @import("json.zig");
+const workspace = @import("workspace.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -9,6 +10,8 @@ const Reader = File.Reader;
 const Writer = File.Writer;
 
 const RpcStream = rpc.RpcStream;
+
+const Workspace = workspace.Workspace;
 
 pub const Method = fn(*Server, rpc.Request) anyerror!void;
 
@@ -37,6 +40,7 @@ pub const Server = struct {
     stream: RpcStream,
     
     state: State = .init,
+    workspace: Workspace,
 
     pub const State = enum {
         init,
@@ -56,11 +60,12 @@ pub const Server = struct {
                 std.io.getStdIn().reader(),
                 std.io.getStdOut().writer(),
             ),
+            .workspace = Workspace.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
-        _ = self;
+        self.workspace.deinit();
     }
 
     pub fn run(self: *Self) !void {

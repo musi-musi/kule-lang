@@ -38,6 +38,49 @@ pub fn escapeChar(c: u8) ?[]const u8 {
     };
 }
 
+pub const String = struct {
+    raw: []const u8,
+    escape_count: usize,
+
+    
+    pub fn realLen(self: String) usize {
+        return self.raw.len - self.escape_count;
+    }
+
+    pub fn unescapeAssumeLen(self: String, str: []u8) void {
+        const raw = self.raw;
+        var s: usize = 0;
+        var r: usize = 0;
+        while (r < raw.len) : (r += 1) {
+            var c = raw[r];
+            if (c == '\\') {
+                r += 1;
+                c = switch (raw[c]) {
+                    '\\' => '\\',
+                    '"' => '"',
+                    '/' => '/',
+                    'b' => 0x08,
+                    'f' => 0x0c,
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    else => '?',
+                };
+            }
+            str[s] = c;
+            s += 1;
+        }
+    }
+
+    pub fn unescapeAlloc(self: String, allocator: Allocator) ![]u8 {
+        const len = self.realLen();
+        const str = try allocator.alloc(u8, len);
+        self.unescapeAssumeLen(str);
+        return str;
+    }
+
+};
+
 pub fn EscapedStringWriter(comptime Writer: type) type {
     return std.io.Writer(Writer, Writer.Error, struct {
         fn writeFn(writer: Writer, bytes: []const u8) Writer.Error!usize {
@@ -294,6 +337,11 @@ pub const Value = struct {
                     var child = init(text);
                     return child;
                 },
+                String => {
+                    is_parseable = true;
+                    var str = self.parseString();
+                    return str;
+                },
                 else => {},
             }
             switch (tag) {
@@ -343,6 +391,35 @@ pub const Value = struct {
             @compileError("cannot parse " ++ @typeName(T) ++ ". consider using json.Value and parsing manually");
         }
         return null;
+    }
+
+    fn parseString(self: *Self) String {
+        var raw = self.text[self.i..];
+        var esc_count: usize = 0;
+        var i: usize = 0;
+        while (i < raw.len) : (i += 1) {
+            var c = raw[i];
+            switch (c) {
+                '"' => {
+                    self.i += i + 1;
+                    self.tag = null;
+                    return String {
+                        .raw = raw[0..i],
+                        .escape_count = esc_count,
+                    };
+                },
+                '\\' => {
+                    esc_count += 1;
+                    i += 1;
+                },
+                else => {}
+            }
+        }
+        self.i = self.text.len;
+        return String {
+            .raw = raw,
+            .escape_count = esc_count,
+        };
     }
 
     fn parseStruct(self: *Self, comptime S: type) S {

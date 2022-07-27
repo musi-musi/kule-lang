@@ -1,4 +1,0 @@
-
-pub const Workspace = struct {
-
-};
