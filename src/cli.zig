@@ -37,7 +37,7 @@ fn parseFile(allocator: Allocator, path: []const u8) !void {
     // try tokens.dump();
     var diagnostics = kule.diagnostics.Diagnostics.init(allocator);
     defer diagnostics.deinit();
-    var parser = try compiler.Parser.init(allocator, src, &diagnostics);
+    var parser = try compiler.Parser.init(allocator, &src, &diagnostics);
     defer parser.deinit();
     const err: ?compiler.Parser.Error = blk: {
         if (parser.parse()) |ast| {

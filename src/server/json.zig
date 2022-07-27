@@ -55,7 +55,7 @@ pub const String = struct {
             var c = raw[r];
             if (c == '\\') {
                 r += 1;
-                c = switch (raw[c]) {
+                c = switch (raw[r]) {
                     '\\' => '\\',
                     '"' => '"',
                     '/' => '/',
@@ -745,28 +745,37 @@ pub const ValueWriter = struct {
         return self.buffer.toOwnedSlice();
     }
 
-    pub fn append(self: *Self, item: anytype) Error!void {
-        const T = @TypeOf(item);
+    pub fn append(self: *Self, val: anytype) Error!void {
+        const T = @TypeOf(val);
         const meta = std.meta;
         const trait = meta.trait;
         switch (@typeInfo(T)) {
             .Struct, .Union, .Enum => {
                 if (@hasDecl(T, "toJson")) {
-                    try item.toJson(self);
+                    try val.toJson(self);
                     return;
                 }
             },
             else => {},
         }
         switch (T) {
-            Value => return self.write(item.buffer),
-            bool => return self.boolean(item),
+            Value => return self.write(val.buffer),
+            bool => return self.boolean(val),
             void => return self.nullValue(),
-            comptime_int, comptime_float => return self.number(item),
+            comptime_int, comptime_float => return self.number(val),
             else => {},
         }
         if (comptime trait.isZigString(T)) {
-            return self.string(item);
+            return self.string(val);
+        }
+        if (comptime trait.isSlice(T)) {
+            // const Item = meta.Child(T);
+            try self.array();
+            for (val) |item| {
+                try self.append(item);
+            }
+            try self.arrayEnd();
+            return;
         }
         switch (@typeInfo(T)) {
             .Struct => |Struct| {
@@ -778,14 +787,14 @@ pub const ValueWriter = struct {
                     try self.array();
                     inline for (fields) |field| {
                         try self.next();
-                        try self.append(@field(item, field.name));
+                        try self.append(@field(val, field.name));
                     }
                     try self.arrayEnd();
                 }
                 else {
                     try self.object();
                     inline for (fields) |field| {
-                        const field_value = @field(item, field.name);
+                        const field_value = @field(val, field.name);
                         if (shouldEncodeField(field.name, field_value)) {
                             try self.fieldName(field.name);
                             try self.append(field_value);
@@ -796,15 +805,18 @@ pub const ValueWriter = struct {
                 return;
             },
             .Int, .Float,  => {
-                return self.number(item);
+                return self.number(val);
             },
             .Optional => {
-                if (item != null)  {
-                    return self.append(item.?);
+                if (val != null)  {
+                    return self.append(val.?);
                 }
                 else {
                     return self.nullValue();
                 }
+            },
+            .Enum, .EnumLiteral => {
+                return self.number(@enumToInt(val));
             },
             else => {},
         }
@@ -829,7 +841,7 @@ pub const ValueWriter = struct {
     fn next(self: *Self) Error!void {
         const txt = self.buffer.items;
         const len = txt.len;
-        const no_comma = charTable(":{[");
+        const no_comma = charTable(":{[,");
         if (len > 0 and !no_comma[txt[len-1]]) {
             try self.write(",");
         }

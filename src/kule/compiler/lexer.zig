@@ -8,6 +8,7 @@ const Diagnostics = diagnostics.Diagnostics;
 
 pub const TokenTag = enum(u32) {
     invalid,
+    start_of_file,
     end_of_file,
 
     identifier,
@@ -123,7 +124,7 @@ pub const Token = struct {
 
 pub const TokenStream = struct {
 
-    source: Source,
+    source: *const Source,
     rest: []const u8,
     lookahead: Token,
     error_count: usize = 0,
@@ -133,14 +134,19 @@ pub const TokenStream = struct {
         InvalidToken,
     };
 
-    pub fn init(src: Source, diags: ?*Diagnostics) Error!TokenStream {
+    pub fn init(src: *const Source, diags: ?*Diagnostics) Error!TokenStream {
         var self: TokenStream = .{
             .source = src,
             .rest = src.text,
             .lookahead = undefined,
             .diagnostics = diags,
         };
-        _ = try self.tryNext();
+        if (src.text.len == 0) {
+            self.lookahead = Token.init(.end_of_file, src.text);
+        }
+        else {
+            _ = try self.tryNext();
+        }
         return self;
     }
 
@@ -243,7 +249,7 @@ pub const TokenStream = struct {
     pub fn sourceError(self: *TokenStream, token: []const u8, comptime format: []const u8, args: anytype) void {
         self.error_count += 1;
         if (self.diagnostics) |diags| {
-            diags.sourceErrorErrorPanic(&self.source, token, format, args);
+            diags.sourceErrorErrorPanic(self.source, token, format, args);
         }
     }
 

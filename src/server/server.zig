@@ -2,6 +2,7 @@ const std = @import("std");
 const rpc = @import("rpc.zig");
 const json = @import("json.zig");
 const workspace = @import("workspace.zig");
+const validation = @import("validation.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -12,6 +13,7 @@ const Writer = File.Writer;
 const RpcStream = rpc.RpcStream;
 
 const Workspace = workspace.Workspace;
+const Validation = validation.Validation;
 
 pub const Method = fn(*Server, rpc.Request) anyerror!void;
 
@@ -41,6 +43,7 @@ pub const Server = struct {
     
     state: State = .init,
     workspace: Workspace,
+    validation: Validation,
 
     pub const State = enum {
         init,
@@ -61,11 +64,13 @@ pub const Server = struct {
                 std.io.getStdOut().writer(),
             ),
             .workspace = Workspace.init(allocator),
+            .validation = Validation.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.workspace.deinit();
+        self.validation.deinit();
     }
 
     pub fn run(self: *Self) !void {
@@ -95,9 +100,6 @@ pub const Server = struct {
                 },
             }
         }
-
-
-
     }
 
     pub const LogType = enum(u32) {
@@ -125,7 +127,7 @@ pub const Server = struct {
         try self.stream.notify(method, params);
     }
 
-    pub fn initialized(self: *Self) void {
+    pub fn initialized(self: *Self) !void {
         self.state = .running;
     }
 

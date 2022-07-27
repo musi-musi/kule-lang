@@ -19,7 +19,7 @@ pub const Parser = struct {
 
     allocator: Allocator,
     arena: ?*std.heap.ArenaAllocator,
-    source: Source,
+    source: *const Source,
     tokens: TokenStream,
     error_count: usize = 0,
     diagnostics: ?*Diagnostics,
@@ -28,7 +28,7 @@ pub const Parser = struct {
         ParseFailed,
     } || TokenStream.Error || Allocator.Error;
 
-    pub fn init(allocator: Allocator, src: Source, diags: ?*Diagnostics) TokenStream.Error!Parser {
+    pub fn init(allocator: Allocator, src: *const Source, diags: ?*Diagnostics) TokenStream.Error!Parser {
         return Parser {
             .allocator = allocator,
             .arena = null,
@@ -178,7 +178,7 @@ pub const Parser = struct {
     pub fn sourceError(self: *Parser, token: []const u8, comptime format: []const u8, args: anytype) void {
         self.error_count += 1;
         if (self.diagnostics) |diags| {
-            diags.sourceErrorErrorPanic(&self.tokens.source, token, format, args);
+            diags.sourceErrorErrorPanic(self.tokens.source, token, format, args);
         }
     }
 
@@ -186,7 +186,7 @@ pub const Parser = struct {
 
 pub const Ast = struct {
 
-    source: Source,
+    source: *const Source,
     arena: ArenaAllocator,
     root: ast.TopLevel = undefined,
 

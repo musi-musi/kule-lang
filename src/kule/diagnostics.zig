@@ -15,6 +15,7 @@ pub const Diagnostics = struct {
 
     arena: ArenaAllocator,
     messages: MessageList,
+    err_count: usize = 0,
 
     const MessageList  = std.ArrayListUnmanaged(SourceMessage);
 
@@ -49,6 +50,9 @@ pub const Diagnostics = struct {
                 .token = token,
                 .message = message,
             });
+            if (message_type == .err) {
+                self.err_count += 1;
+            }
         }
         else {
             return error.MessageTokenNotFromMessageSource;

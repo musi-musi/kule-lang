@@ -2,7 +2,7 @@ let lib = import src/lib/akesi
 let buffers = import buffers
 let parent = import ../lib
 
-let mvp = model * view * proj
+let mvp = model * view * proj 
 
 let ma = module {
     pub let toki = (
@@ -15,4 +15,3 @@ let ma = module {
 }
 
 let soweli(suwi: Walo) = 25 + ma.toki as Foo * suwi.mute
-

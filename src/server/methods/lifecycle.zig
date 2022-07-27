@@ -7,7 +7,7 @@ const Server = server.Server;
 const Request = rpc.Request;
 const Value = json.Value;
 
-const capabilities = .{
+const server_capabilities = .{
     .textDocumentSync = 1,
 };
 
@@ -31,7 +31,7 @@ pub fn initialize(s: *Server, request: Request) !void {
         }
     }
     try request.respond(.{
-        .capabilities = capabilities,
+        .capabilities = server_capabilities,
         .serverInfo = .{
             .name = "kule language server",
         },
@@ -39,7 +39,7 @@ pub fn initialize(s: *Server, request: Request) !void {
 }
 
 pub fn initialized(s: *Server, _: Request) !void {
-    s.initialized();
+    try s.initialized();
 }
 
 pub fn shutdown(s: *Server, request: Request) !void {

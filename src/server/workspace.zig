@@ -169,11 +169,15 @@ pub const File = struct {
     }
 
     fn updateText(self: *Self, text: String) !void {
-        var len = text.realLen();
-        if (len != self.text.len) {
-            self.text = try self.allocator().realloc(self.text, len);
-        }
-        text.unescapeAssumeLen(self.text);
+        // var len = text.realLen();
+        const a = self.allocator();
+        a.free(self.text);
+        self.text = try text.unescapeAlloc(a);
+        // self.text = try allocator.alloc(u8, len);
+        // if (len != self.text.len) {
+        //     self.text = try self.allocator().realloc(self.text, len);
+        // }
+        // text.unescapeAssumeLen(self.text);
     }
 
     fn allocator(self: Self) Allocator {
