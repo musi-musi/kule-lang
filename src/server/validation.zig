@@ -11,7 +11,7 @@ const Server = server.Server;
 
 const Source = kule.Source;
 const Diagnostics = kule.diagnostics.Diagnostics;
-const SourceModule = kule.compiler.SourceModule;
+const SourceModule = kule.compiler.expression.SourceModule;
 
 
 const File = workspace.File;
@@ -35,11 +35,18 @@ pub const Validation = struct {
         _ = self.removeFile(file.uri);
         const src_diag = try self.allocator.create(SourceDiag);
         src_diag.* = try SourceDiag.init(self.allocator, file);
-        src_diag.module = kule.compiler.parseSource(
+        if (kule.compiler.parseSource(
             self.allocator,
             &src_diag.source,
             &src_diag.diag,
-        ) catch null;
+        )) |module| {
+            src_diag.module = module;
+            const mod: *SourceModule = &src_diag.module.?;
+            kule.compiler.analyzeSourceModule(mod.arena.allocator(), mod, &src_diag.diag) catch {};
+        }
+        else |_| {
+            src_diag.module = null;
+        }
         try self.diags.put(self.allocator, file.uri, src_diag);
         return src_diag;
     }

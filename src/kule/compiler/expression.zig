@@ -1,12 +1,31 @@
 const std = @import("std");
 const lexer = @import("lexer.zig");
 const types = @import("types.zig");
+const scoping = @import("scoping.zig");
+const source = @import("../source.zig");
 
+const Source = source.Source;
+
+const Symbol = scoping.Symbol;
 const Token = lexer.Token;
 const Type = types.Type;
+const Scope = scoping.Scope;
 
-const number_type = Type {
-    .scalar = .number,
+pub const SourceModule = struct {
+
+    source: *const Source,
+    arena: std.heap.ArenaAllocator,
+
+    module: Module,
+
+    pub fn deinit(self: SourceModule) void {
+        self.arena.deinit();
+    }
+
+};
+
+pub const Operator = enum {
+    add, sub, mul, div, cast, neg, pos,
 };
 
 pub const Expr = struct {
@@ -45,19 +64,13 @@ pub const ExprVal = union(enum) {
 
     pub const Name = struct {
         name: Token,
-        expr: ?*Expr = null,
-        origin: ?Origin = null,
-
-        pub const Origin = union(enum) {
-            decl: *Decl,
-            param: *ParamDef,
-            where: *Decl,
-        };
+        symbol: ?Symbol = null,
+        
     };
 
     pub fn valueType(self: ExprVal) ?Type {
         return switch (self) {
-            .num_lit => number_type,
+            .num_lit => types.number_type,
             else => null,
         };
     }
@@ -75,12 +88,13 @@ pub const ExprVal = union(enum) {
 
     pub const NumLit = struct {
         literal: Token,
+        value: types.number_type.Val(),
     };
 
     pub const DotMember = struct {
         container: *Expr,
         member_name: Token,
-        decl: ?*Decl = null,
+        symbol: ?Symbol = null,
     };
 
     pub const EvalParams = struct {
@@ -102,6 +116,8 @@ pub const Module = struct {
 
     decls: []Decl,
 
+    scope: ?*Scope = null,
+
 };
 
 pub const Decl = struct {
@@ -111,12 +127,17 @@ pub const Decl = struct {
     expr: Expr,
     params: []ParamDef,
     type_expr: ?Expr,
+    symbol: ?Symbol = null,
 
     where_clauses: []Decl,
+
+    scope: ?*Scope = null,
 
 };
 
 pub const ParamDef = struct {
     name: Token,
     type_expr: ?Expr,
+    index: usize = undefined,
+    scope: ?*Scope = null,
 };

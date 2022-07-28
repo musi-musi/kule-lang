@@ -20,6 +20,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Diagnostics = diagnostics.Diagnostics;
 
 
+const SourceModule = expression.SourceModule;
 const Expr = expression.Expr;
 const ExprVal = expression.ExprVal;
 const Module = expression.Module;
@@ -27,18 +28,6 @@ const Decl = expression.Decl;
 const ParamDef = expression.ParamDef;
 
 
-pub const SourceModule = struct {
-
-    source: *const Source,
-    arena: ArenaAllocator,
-
-    module: Module,
-
-    pub fn deinit(self: SourceModule) void {
-        self.arena.deinit();
-    }
-
-};
 
 pub const ParserError = Parser.Error;
 
@@ -199,6 +188,9 @@ const Parser = struct {
             if (params.len == 0) {
                 p.sourceError(rparen.text, "parameter list cannot be empty", .{});
             }
+            for (params) |*param, i| {
+                param.index = i;
+            }
             return params;
         }
         else {
@@ -349,19 +341,27 @@ const Parser = struct {
                 });
             },
             .number => {
+                const value = std.fmt.parseFloat(comptime types.number_type.Val(), token.text) catch 0;
                 return Expr.init(ExprVal.NumLit {
                     .literal = token,
+                    .value = value,
                 });
             },
             .kw_module => {
-                _ = try p.accept(.lcurly);
-                const decls = try p.manyNode(LetDeclNode);
-                _ = try p.accept(.rcurly);
-                return Expr.init(ExprVal.ModuleDef{
-                    .module = Module {
-                        .decls = decls,
-                    },
-                });
+                if (try p.acceptOpt(.lcurly)) |_| {
+                    const decls = try p.manyNode(LetDeclNode);
+                    _ = try p.accept(.rcurly);
+                    return Expr.init(ExprVal.ModuleDef{
+                        .module = Module {
+                            .decls = decls,
+                        },
+                    });
+                }
+                else {
+                    return Expr.init(ExprVal.Name{
+                        .name = token,
+                    });
+                }
             },
             .kw_import => {
                 return Expr.init(ExprVal.Import {
