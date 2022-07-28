@@ -37,21 +37,16 @@ fn parseFile(allocator: Allocator, path: []const u8) !void {
     // try tokens.dump();
     var diagnostics = kule.diagnostics.Diagnostics.init(allocator);
     defer diagnostics.deinit();
-    var parser = try compiler.Parser.init(allocator, &src, &diagnostics);
-    defer parser.deinit();
-    const err: ?compiler.Parser.Error = blk: {
-        if (parser.parse()) |ast| {
-            defer ast.deinit();
-            const stdout = std.io.getStdOut().writer();
-            kule.log.info("parsed file {s}", .{path});
-            try ast.dump(stdout);
-            break :blk null;
-        }
-        else |err| {
-            kule.log.err("{s} failed with {d} errors", .{path, parser.error_count});
-            break :blk err;
-        }
-    };
-    try diagnostics.logMessages();
-    return err orelse {};
+    if (compiler.parseSource(allocator, &src, &diagnostics)) |result| {
+        var src_module = result;
+        defer src_module.deinit();
+        // const stdout = std.io.getStdOut().writer();
+        kule.log.info("parsed file {s}", .{path});
+        // try src_module.dump(stdout);
+    }
+    else |err| {
+        kule.log.err("{s} failed with {d} errors", .{path, diagnostics.error_count});
+        try diagnostics.logMessages();
+        return err;
+    }
 }

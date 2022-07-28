@@ -11,8 +11,7 @@ const Server = server.Server;
 
 const Source = kule.Source;
 const Diagnostics = kule.diagnostics.Diagnostics;
-const Parser = kule.compiler.Parser;
-const Ast = kule.compiler.Ast;
+const SourceModule = kule.compiler.SourceModule;
 
 
 const File = workspace.File;
@@ -36,15 +35,13 @@ pub const Validation = struct {
         _ = self.removeFile(file.uri);
         const src_diag = try self.allocator.create(SourceDiag);
         src_diag.* = try SourceDiag.init(self.allocator, file);
-        self.parse(src_diag) catch {};
+        src_diag.module = kule.compiler.parseSource(
+            self.allocator,
+            &src_diag.source,
+            &src_diag.diag,
+        ) catch null;
         try self.diags.put(self.allocator, file.uri, src_diag);
         return src_diag;
-    }
-
-    fn parse(self: *Self, sd: *SourceDiag) !void {
-        var parser = try Parser.init(self.allocator, &sd.source, &sd.diag);
-        defer parser.deinit();
-        sd.ast = parser.parse() catch null;
     }
 
     pub fn removeFile(self: *Self, uri: []const u8) bool {
@@ -75,22 +72,22 @@ pub const SourceDiag = struct {
     uri: []const u8,
     source: Source,
     diag: Diagnostics,
-    ast: ?Ast,
+    module: ?SourceModule,
 
     pub fn init(allocator: Allocator, file: *File) !SourceDiag {
         return SourceDiag {
             .uri = file.uri,
             .source = try Source.init(allocator, file.name, file.text),
             .diag = Diagnostics.init(allocator),
-            .ast = null,
+            .module = null,
         };
     }
 
     pub fn deinit(self: *SourceDiag, allocator: Allocator) void {
         self.source.deinit(allocator);
         self.diag.deinit();
-        if (self.ast) |ast| {
-            ast.deinit();
+        if (self.module) |module| {
+            module.deinit();
         }
     }
 

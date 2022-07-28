@@ -15,7 +15,7 @@ pub const Diagnostics = struct {
 
     arena: ArenaAllocator,
     messages: MessageList,
-    err_count: usize = 0,
+    error_count: usize = 0,
 
     const MessageList  = std.ArrayListUnmanaged(SourceMessage);
 
@@ -51,7 +51,7 @@ pub const Diagnostics = struct {
                 .message = message,
             });
             if (message_type == .err) {
-                self.err_count += 1;
+                self.error_count += 1;
             }
         }
         else {

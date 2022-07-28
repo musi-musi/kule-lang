@@ -20,6 +20,9 @@ pub fn @"textDocument/didOpen"(s: *Server, request: Request) !void {
         const file = try s.workspace.addOrUpdateFile(uri, text);
         const diags = try s.validation.validateFile(file);
         try diags.publish(s);
+        if (diags.module == null) {
+            try s.log(.log, "{s} failed to parse ({d} errors)", .{file.name, diags.diag.error_count});
+        }
 
         // try s.log(.log, "open {s} ({d} errors)", .{file.name, diags.diag.err_count});
         // try s.log(.log, "open {s}", .{file.name});
@@ -63,10 +66,13 @@ pub fn @"textDocument/didChange"(s: *Server, request: Request) !void {
                 const diags = try s.validation.validateFile(file);
                 try diags.publish(s);
 
+                if (diags.module == null) {
+                    try s.log(.log, "{s} failed to parse ({d} errors)", .{file.name, diags.diag.error_count});
+                }
+
                 // try s.log(.log, "update {s}", .{file.name});
                 // try s.log(.log, "update {s} ({d} errors)", .{file.name, diags.diag.err_count});
                 // try sourceDump(s, &diags.source);
-                return;
             }
         }
         // try s.log(.log, ">>>>>>\n{s}\n<<<<<<", .{text.raw});
