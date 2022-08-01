@@ -11,51 +11,47 @@ const Server = server.Server;
 
 const Source = kule.Source;
 const Diagnostics = kule.diagnostics.Diagnostics;
-const SourceModule = kule.compiler.expression.SourceModule;
+const CompilationUnit = kule.compiler.CompilationUnit;
 
 
 const File = workspace.File;
 
-const SourceDiags = std.StringHashMapUnmanaged(*SourceDiag);
+const Units = std.StringHashMapUnmanaged(*CompilationUnit);
 
 pub const Validation = struct {
     allocator: Allocator,
-    diags: SourceDiags,
+    units: Units,
 
     const Self = @This();
 
     pub fn init(allocator: Allocator) Self {
         return Self {
             .allocator = allocator,
-            .diags = .{},
+            .units = .{},
         };
     }
 
-    pub fn validateFile(self: *Self, file: *File) !*SourceDiag {
+    pub fn validateFile(self: *Self, file: *File) !*CompilationUnit {
         _ = self.removeFile(file.uri);
-        const src_diag = try self.allocator.create(SourceDiag);
-        src_diag.* = try SourceDiag.init(self.allocator, file);
-        if (kule.compiler.parseSource(
-            self.allocator,
-            &src_diag.source,
-            &src_diag.diag,
-        )) |module| {
-            src_diag.module = module;
-            const mod: *SourceModule = &src_diag.module.?;
-            kule.compiler.analyzeSourceModule(mod.arena.allocator(), mod, &src_diag.diag) catch {};
-        }
-        else |_| {
-            src_diag.module = null;
-        }
-        try self.diags.put(self.allocator, file.uri, src_diag);
-        return src_diag;
+        const unit = try self.allocator.create(CompilationUnit);
+        errdefer self.allocator.destroy(unit);
+        const source = try self.allocator.create(Source);
+        errdefer self.allocator.destroy(source);
+        source.* = try Source.init(self.allocator, file.name, file.text);
+        errdefer source.deinit(self.allocator);
+        unit.* = CompilationUnit.init(self.allocator, source);
+        kule.compiler.parseUnit(unit) catch {};
+        try self.units.put(self.allocator, file.uri, unit);
+        return unit;
     }
 
     pub fn removeFile(self: *Self, uri: []const u8) bool {
-        if (self.diags.fetchRemove(uri)) |kv| {
-            var src_diag = kv.value;
-            src_diag.deinit(self.allocator);
-            self.allocator.destroy(src_diag);
+        if (self.units.fetchRemove(uri)) |kv| {
+            var unit = kv.value;
+            unit.source.deinit(self.allocator);
+            self.allocator.destroy(unit.source);
+            unit.deinit();
+            self.allocator.destroy(unit);
             return true;
         }
         else {
@@ -64,56 +60,34 @@ pub const Validation = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        var diags = self.diags.valueIterator();
-        while (diags.next()) |ptr| {
-            const diag = ptr.*;
-            diag.deinit(self.allocator);
-            self.allocator.destroy(diag);
+        var units = self.units.valueIterator();
+        while (units.next()) |ptr| {
+            const unit = ptr.*;
+            unit.source.deinit(self.allocator);
+            self.allocator.destroy(unit.source);
+            unit.deinit();
+            self.allocator.destroy(unit);
         }
-        self.diags.deinit(self.allocator);
+        self.units.deinit(self.allocator);
     }
 
-};
-
-pub const SourceDiag = struct {
-    uri: []const u8,
-    source: Source,
-    diag: Diagnostics,
-    module: ?SourceModule,
-
-    pub fn init(allocator: Allocator, file: *File) !SourceDiag {
-        return SourceDiag {
-            .uri = file.uri,
-            .source = try Source.init(allocator, file.name, file.text),
-            .diag = Diagnostics.init(allocator),
-            .module = null,
-        };
-    }
-
-    pub fn deinit(self: *SourceDiag, allocator: Allocator) void {
-        self.source.deinit(allocator);
-        self.diag.deinit();
-        if (self.module) |module| {
-            module.deinit();
+    pub fn publishFileDiagnostics(self: Self, uri: []const u8, s: *Server) !void {
+        if (self.units.get(uri)) |unit| {
+            const msgs = unit.diagnostics.messages.items;
+            const lsp_diags = try s.allocator.alloc(lsp.Diagnostic, msgs.len);
+            defer s.allocator.free(lsp_diags);
+            for (msgs) |msg, i| {
+                lsp_diags[i] = lsp.Diagnostic.fromSrcMsg(msg.*);
+            }
+            const diag_note = .{
+                .uri = uri,
+                .diagnostics = lsp_diags,
+            };
+            // const j = try json.serialize(s.allocator, diag_note);
+            // defer s.allocator.free(j);
+            // try s.log(.log, ">>{s}<<", .{j});
+            try s.notifyClient("textDocument/publishDiagnostics", diag_note);
         }
-    }
-
-
-    pub fn publish(self: *SourceDiag, s: *Server) !void {
-        const msgs = self.diag.messages.items;
-        const diags = try s.allocator.alloc(lsp.Diagnostic, msgs.len);
-        defer s.allocator.free(diags);
-        for (msgs) |msg, i| {
-            diags[i] = lsp.Diagnostic.fromSrcMsg(msg);
-        }
-        const diag_note = .{
-            .uri = self.uri,
-            .diagnostics = diags,
-        };
-        // const j = try json.serialize(s.allocator, diag_note);
-        // defer s.allocator.free(j);
-        // try s.log(.log, ">>{s}<<", .{j});
-        try s.notifyClient("textDocument/publishDiagnostics", diag_note);
     }
 
 };

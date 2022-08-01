@@ -18,11 +18,8 @@ pub fn @"textDocument/didOpen"(s: *Server, request: Request) !void {
         const uri = p.textDocument.uri;
         const text = p.textDocument.text;
         const file = try s.workspace.addOrUpdateFile(uri, text);
-        const diags = try s.validation.validateFile(file);
-        try diags.publish(s);
-        if (diags.module == null) {
-            try s.log(.log, "{s} failed to parse ({d} errors)", .{file.name, diags.diag.error_count});
-        }
+        _ = try s.validation.validateFile(file);
+        try s.validation.publishFileDiagnostics(uri, s);
 
         // try s.log(.log, "open {s} ({d} errors)", .{file.name, diags.diag.err_count});
         // try s.log(.log, "open {s}", .{file.name});
@@ -63,12 +60,9 @@ pub fn @"textDocument/didChange"(s: *Server, request: Request) !void {
                 const uri = p.textDocument.uri;
                 const text = change.text;
                 const file = try s.workspace.addOrUpdateFile(uri, text);
-                const diags = try s.validation.validateFile(file);
-                try diags.publish(s);
+                _ = try s.validation.validateFile(file);
+                try s.validation.publishFileDiagnostics(uri, s);
 
-                if (diags.module == null) {
-                    try s.log(.log, "{s} failed to parse ({d} errors)", .{file.name, diags.diag.error_count});
-                }
 
                 // try s.log(.log, "update {s}", .{file.name});
                 // try s.log(.log, "update {s} ({d} errors)", .{file.name, diags.diag.err_count});
@@ -95,8 +89,6 @@ pub fn @"textDocument/didSave"(s: *Server, request: Request) !void {
         },
     })) |p| {
         const uri = p.textDocument.uri;
-        if (s.validation.diags.get(uri)) |diags| {
-            try diags.publish(s);
-        }
+        try s.validation.publishFileDiagnostics(uri, s);
     }
 }

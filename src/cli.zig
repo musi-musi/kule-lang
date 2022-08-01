@@ -12,20 +12,33 @@ pub fn main() !void {
     var args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
     if (args.len <= 1) {
-        kule.log.err("must provide action", .{});
+        kule.logger.err("must provide action", .{});
         // std.os.exit(1);
     }
     else {
         const action = args[1];
         if (std.mem.eql(u8, action, "parse")) {
             if (args.len <= 2) {
-                kule.log.err("must provide at least one source file", .{});
+                kule.logger.err("must provide at least one source file", .{});
                 // std.os.exit(1);
             }
             for (args[2..]) |arg| {
                 parseFile(allocator, arg) catch {};
             }
         }
+        // if (std.mem.eql(u8, action, "list-constants")) {
+        //     // const Type = kule.compiler.types.Type;
+        //     for (kule.compiler.language_constants) |constant| {
+        //         const value = constant.@"1";
+        //         if (value.value_type == .type_value and value.data.type_value == .number) {
+        //             const number = value.data.type_value.number;
+        //             std.log.info("{s} {x:0>3} {x:0>3} {}", .{constant.@"0", @enumToInt(number.encoding), @enumToInt(number.dimensions), number.is_dynamic});
+        //         }
+        //         else {
+        //             std.log.info("{s}", .{constant.@"0"});
+        //         }
+        //     }
+        // }
     }
 }
 
@@ -33,20 +46,13 @@ pub fn main() !void {
 fn parseFile(allocator: Allocator, path: []const u8) !void {
     var src = try kule.Source.fromFileLocal(allocator, path);
     defer src.deinitFile(allocator);
-    // var tokens = try kule.TokenStream.init(src);
-    // try tokens.dump();
-    var diagnostics = kule.diagnostics.Diagnostics.init(allocator);
-    defer diagnostics.deinit();
-    if (compiler.parseSource(allocator, &src, &diagnostics)) |result| {
-        var src_module = result;
-        defer src_module.deinit();
-        // const stdout = std.io.getStdOut().writer();
-        kule.log.info("parsed file {s}", .{path});
-        // try src_module.dump(stdout);
+    var unit = compiler.CompilationUnit.init(allocator, &src);
+    defer unit.deinit();
+    if (compiler.parseUnit(&unit)) {
+        kule.logger.info("parsed file {s}", .{path});
     }
     else |err| {
-        kule.log.err("{s} failed with {d} errors", .{path, diagnostics.error_count});
-        try diagnostics.logMessages();
-        return err;
+        kule.logger.err("{s} failed with {d} errors ({s})", .{path, unit.diagnostics.error_count, @errorName(err)});
     }
+    unit.diagnostics.logMessages();
 }

@@ -56,6 +56,7 @@ pub const Source = struct {
     pub fn fromFile(allocator: Allocator, name: ?[]const u8, file: std.fs.File) !Source {
         const stat = try file.stat();
         const text = try allocator.alloc(u8, stat.size);
+        errdefer allocator.free(text);
         _ = try file.readAll(text);
         return try init(allocator, name, text);
     }
@@ -95,6 +96,10 @@ pub const Source = struct {
                 .column = token_addr - @ptrToInt(window[0].ptr),
             };
         }
+    }
+
+    pub fn displayName(self: Source) []const u8 {
+        return self.name orelse "???";
     }
 
 };

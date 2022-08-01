@@ -1,29 +1,31 @@
 const std = @import("std");
 
 const source = @import("source.zig");
-const log = @import("log.zig");
+const logger = @import("logger.zig");
 
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Source = source.Source;
 const SourceLocation = source.SourceLocation;
-const LogType = log.LogType;
+const LogType = logger.LogType;
 
 
 pub const Diagnostics = struct {
 
     arena: ArenaAllocator,
+    source: *const Source,
     messages: MessageList,
     error_count: usize = 0,
 
-    const MessageList  = std.ArrayListUnmanaged(SourceMessage);
+    const MessageList  = std.ArrayListUnmanaged(*Message);
 
 
-    pub fn init(allocator: Allocator) Diagnostics {
+    pub fn init(allocator: Allocator, src: *const Source) Diagnostics {
         return Diagnostics{
             .messages = .{},
             .arena = ArenaAllocator.init(allocator),
+            .source = src,
         };
     }
 
@@ -31,131 +33,114 @@ pub const Diagnostics = struct {
         self.arena.deinit();
     }
 
-    pub fn sourceError(self: *Diagnostics, src: *const Source, token: []const u8, comptime format: []const u8, args: anytype) !void {
-        try self.sourceMessage(.err, src, token, format, args);
+    pub fn logInfo(self: *Diagnostics, token: []const u8, comptime format: []const u8, args: anytype) void
+        { self.log(.info, token, format, args); }
+    pub fn logError(self: *Diagnostics, token: []const u8, comptime format: []const u8, args: anytype) void
+        { self.log(.err, token, format, args); }
+
+    pub fn log(self: *Diagnostics, message_type: LogType, token: []const u8, comptime format: []const u8, args: anytype) void {
+        _ = self.start(message_type, token, format, args);
     }
 
-    pub fn sourceInfo(self: *Diagnostics, src: *const Source, token: []const u8, comptime format: []const u8, args: anytype) !void {
-        try self.sourceMessage(.info, src, token, format, args);
+    pub fn startInfo(self: *Diagnostics, token: []const u8, comptime format: []const u8, args: anytype) *Message
+        { return self.start(.info, token, format, args); }
+    pub fn startError(self: *Diagnostics, token: []const u8, comptime format: []const u8, args: anytype) *Message
+        { return self.start(.err, token, format, args); }
+
+    pub fn start(self: *Diagnostics, message_type: LogType, token: []const u8, comptime format: []const u8, args: anytype) *Message {
+        const message = self.create(message_type, token, format, args);
+        self.append(message);
+        return message;
     }
 
-    pub fn sourceMessage(self: *Diagnostics, message_type: LogType, src: *const Source, token: []const u8, comptime format: []const u8, args: anytype) !void {
-        if (src.tokenLocation(token)) |location| {
+    pub fn append(self: *Diagnostics, message: *Message) void {
+        self.messages.append(self.arena.allocator(), message) catch panicOutOfMemory();
+        if (message.message_type == .err) {
+            self.error_count += 1;
+        }
+    }
+
+
+
+    pub fn createInfo(self: *Diagnostics, token: []const u8, comptime format: []const u8, args: anytype) *Message
+        { return self.create(.info, token, format, args); }
+    pub fn createError(self: *Diagnostics, token: []const u8, comptime format: []const u8, args: anytype) *Message
+        { return self.create(.err, token, format, args); }
+
+    pub fn create(self: *Diagnostics, message_type: LogType, token: []const u8, comptime format: []const u8, args: anytype) *Message {
+        if (self.source.tokenLocation(token)) |location| {
             const allocator = self.arena.allocator();
-            const message = try std.fmt.allocPrint(allocator, format, args);
-            try self.messages.append(allocator, SourceMessage {
-                .source = src,
+            const message_text = std.fmt.allocPrint(allocator, format, args) catch panicOutOfMemory();
+            const message = allocator.create(Message) catch panicOutOfMemory();
+            message.* = Message {
+                .diagnostics = self,
                 .location = location,
                 .message_type = message_type,
                 .token = token,
-                .message = message,
-            });
-            if (message_type == .err) {
-                self.error_count += 1;
-            }
+                .message = message_text,
+            };
+            return message;
         }
         else {
-            return error.MessageTokenNotFromMessageSource;
+            std.debug.panic("token '{s}' ({x:0>16}..{x:0>16}) is not from source '{s}' ({x:0>16}..{x:0>16})", .{
+                token, @ptrToInt(token.ptr), @ptrToInt(token.ptr) + token.len,
+                self.source.displayName(), @ptrToInt(self.source.text.ptr), @ptrToInt(self.source.text.ptr) + self.source.text.len,
+            });
         }
     }
-    
-    pub fn sourceErrorErrorPanic(self: *Diagnostics, src: *const Source, token: []const u8, comptime format: []const u8, args: anytype) void {
-        self.sourceMessageErrorPanic(.err, src, token, format, args);
-    }
 
-    pub fn sourceInfoErrorPanic(self: *Diagnostics, src: *const Source, token: []const u8, comptime format: []const u8, args: anytype) void {
-        self.sourceMessage(.info, src, token, format, args);
-    }
-
-    pub fn sourceMessageErrorPanic(self: *Diagnostics, message_type: LogType, src: *const Source, token: []const u8, comptime format: []const u8, args: anytype) void {
-        self.sourceMessage(message_type, src, token, format, args) catch |err| {
-            const source_name: []const u8 = src.name orelse "(???)";
-            std.debug.panic(
-                \\could not add diagnostic: {s}
-                \\ type: {s}
-                \\ source: {x} {s}
-                \\ token: {s}
-                \\ format: {s}
-                , .{ @errorName(err), @tagName(message_type), @ptrToInt(&src), source_name, token, format}
-            );
-        };
-    }
-
-    pub fn logMessages(self: *Diagnostics) !void {
-        var arena = ArenaAllocator.init(self.arena.child_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
-        const SourceMap = std.AutoArrayHashMapUnmanaged(*const Source, MessageList);
-
-        var source_map = SourceMap{};
-        for (self.messages.items) |message| {
-            var list = source_map.get(message.source) orelse MessageList{};
-            try list.append(allocator, message);
-            try source_map.put(allocator, message.source, list);
-        }
-
-
-        const lists = try allocator.alloc(SourceMap.Entry, source_map.count());
-        var iter = source_map.iterator();
-        for (lists) |*list| {
-            list.* = iter.next().?;
-        }
+    pub fn logMessages(self: *Diagnostics) void {
 
         const sort = std.sort;
 
 
-        sort.sort(SourceMap.Entry, lists, {}, struct {
-            fn f(_: void, a: SourceMap.Entry, b: SourceMap.Entry) bool {
-                const as = a.key_ptr.*;
-                const bs = b.key_ptr.*;
-                if (as == bs) {
-                    return false;
-                }
-                else {
-                    if (as.name == null and bs.name == null) {
-                        return @ptrToInt(as) < @ptrToInt(bs);
-                    }
-                    if (as.name == null) {
-                        return true;
-                    }
-                    if (bs.name == null) {
-                        return false;
-                    }
-                    return std.mem.order(u8, as.name.?, bs.name.?) == .lt;
+        const messages = self.messages.items;
+        sort.sort(*Message, messages, {}, struct {
+            fn f(_: void, a: *Message, b: *Message) bool {
+                const al = a.location;
+                const bl = b.location;
+                switch (std.math.order(al.line, bl.line)) {
+                    .lt => return true,
+                    .gt => return false,
+                    .eq => return std.math.order(al.column, bl.column) == .lt,
                 }
             }
         }.f);
 
-        for (lists) |entry| {
-            const messages = entry.value_ptr.items;
-            sort.sort(SourceMessage, messages, {}, struct {
-                fn f(_: void, a: SourceMessage, b: SourceMessage) bool {
-                    const al = a.location;
-                    const bl = b.location;
-                    switch (std.math.order(al.line, bl.line)) {
-                        .lt => return true,
-                        .gt => return false,
-                        .eq => return std.math.order(al.column, bl.column) == .lt,
-                    }
-                }
-            }.f);
-
-            for (messages) |message| {
-                log.sourceLog(message.message_type, message.source.*, message.token, "{s}", .{message.message});
+        for (messages) |message| {
+            var msg: ?*Message = message;
+            while (msg) |m| : (msg = m.next_in_group) {
+                logger.sourceLog(message.message_type, self.source.*, message.token, "{s}", .{message.message});
             }
         }
+    }
+
+    fn panicOutOfMemory() noreturn {
+        @panic("diagnostics: out of memory");
     }
 
 
 };
 
-pub const SourceMessage = struct {
-
-    source: *const Source,
+pub const Message = struct {
+    diagnostics: *Diagnostics,
     location: SourceLocation,
     message_type: LogType,
     token: []const u8,
     message: []const u8,
+    next_in_group: ?*Message = null,
 
+    pub fn add(self: *Message, message_type: LogType, token: []const u8, comptime format: []const u8, args: anytype) *Message {
+        const next = self.diagnostics.create(message_type, token, format, args);
+        self.next_in_group = next;
+        return next;
+    }
+
+    pub fn addError(self: *Message, token: []const u8, comptime format: []const u8, args: anytype) *Message {
+        return self.add(.err, token, format, args);
+    }
+
+    pub fn addInfo(self: *Message, token: []const u8, comptime format: []const u8, args: anytype) *Message {
+        return self.add(.info, token, format, args);
+    }
 };

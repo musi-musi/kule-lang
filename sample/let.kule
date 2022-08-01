@@ -1,0 +1,5 @@
+let x = module {
+    let fdg = 64
+}
+
+let foo : fuck = a 

@@ -1,6 +1,5 @@
 const std = @import("std");
 const source = @import("../source.zig");
-const log = @import("../log.zig");
 const diagnostics = @import("../diagnostics.zig");
 
 const Source = source.Source;
@@ -128,13 +127,13 @@ pub const TokenStream = struct {
     rest: []const u8,
     lookahead: Token,
     error_count: usize = 0,
-    diagnostics: ?*Diagnostics,
+    diagnostics: *Diagnostics,
 
     pub const Error = error {
         InvalidToken,
     };
 
-    pub fn init(src: *const Source, diags: ?*Diagnostics) Error!TokenStream {
+    pub fn init(src: *const Source, diags: *Diagnostics) Error!TokenStream {
         var self: TokenStream = .{
             .source = src,
             .rest = src.text,
@@ -209,7 +208,7 @@ pub const TokenStream = struct {
         }
         if (last.tag == .kw_import) {
             if (self.isOnNewLine()) {
-                self.sourceError(last.text, "import path missing. path must be on the same line", .{});
+                self.logError(last.text, "import path missing. path must be on the same line", .{});
                 return Token.init(.import_path, "");
             }
             else {
@@ -235,10 +234,10 @@ pub const TokenStream = struct {
                     const token_text = text[0..std.math.min(text.len, len orelse 1)];
                     const token = Token.init(.invalid, token_text);
                     if (len == null or !std.ascii.isPrint(c)) {
-                        self.sourceError(token_text, "unexpected byte: {x}", .{c});
+                        self.logError(token_text, "unexpected byte: {x}", .{c});
                     }
                     else {
-                        self.sourceError(token_text, "unexpected character: {s}", .{token_text});
+                        self.logError(token_text, "unexpected character: {s}", .{token_text});
                     }
                     return token;
                 }
@@ -246,11 +245,8 @@ pub const TokenStream = struct {
         }
     }
 
-    pub fn sourceError(self: *TokenStream, token: []const u8, comptime format: []const u8, args: anytype) void {
-        self.error_count += 1;
-        if (self.diagnostics) |diags| {
-            diags.sourceErrorErrorPanic(self.source, token, format, args);
-        }
+    pub fn logError(self: *TokenStream, token: []const u8, comptime format: []const u8, args: anytype) void {
+        self.diagnostics.logError(token, format, args);
     }
 
     fn isOnNewLine(self: TokenStream) bool {
@@ -323,7 +319,7 @@ pub const TokenStream = struct {
                 const digits_len = many(rest[1..], std.ascii.isDigit).len;
                 if (digits_len > 0) {
                     const number = rest[0..digits_len + 1];
-                    self.sourceError(number, "decimal number literal starts with decimal point. add a single leading 0", .{});
+                    self.logError(number, "decimal number literal starts with decimal point. add a single leading 0", .{});
                     return Token.init(.number, number);
                 }
             }
@@ -343,10 +339,10 @@ pub const TokenStream = struct {
         }
         const number = rest[0..len];
         if (whole_len > 1 and number[0] == '0') {
-            self.sourceError(number, "decimal number literal has leading zeroes", .{});
+            self.logError(number, "decimal number literal has leading zeroes", .{});
         }
         if (len == whole_len + 1) {
-            self.sourceError(number, "decimal number literal has no digits after decimal point", .{});
+            self.logError(number, "decimal number literal has no digits after decimal point", .{});
         }
         return Token.init(.number, number);
     }
@@ -374,15 +370,15 @@ pub const TokenStream = struct {
         const path = text[0..len];
         if (len == 1) {
             switch (path[0]) {
-                '.', '/' => self.sourceError(path, "import path must be a relative file", .{}),
+                '.', '/' => self.logError(path, "import path must be a relative file", .{}),
                 else => {},
             }
         }
         else if (path[0] == '/') {
-            self.sourceError(path[0..1], "import path cannot be absolute", .{});
+            self.logError(path[0..1], "import path cannot be absolute", .{});
         }
         else if (path[len - 1] == '/') {
-            self.sourceError(path[len-1..], "import path cannot be a directory", .{});
+            self.logError(path[len-1..], "import path cannot be a directory", .{});
         }
         return path;
     }

@@ -2,7 +2,7 @@ const std = @import("std");
 const kule = @import("../kule.zig");
 
 const SrcLoc = kule.SourceLocation;
-const SrcMsg = kule.diagnostics.SourceMessage;
+const Message = kule.diagnostics.Message;
 
 pub const int = i32;
 pub const uint = u32;
@@ -39,7 +39,7 @@ pub const Diagnostic = struct {
     source: []const u8 = "source",
     message: []const u8 = "",
 
-    pub fn fromSrcMsg(msg: SrcMsg) Diagnostic {
+    pub fn fromSrcMsg(msg: Message) Diagnostic {
         return .{
             .range = Range.fromSourceLocLen(msg.location, msg.token.len),
             .severity = switch (msg.message_type) {
