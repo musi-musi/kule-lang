@@ -69,18 +69,22 @@ pub const Diagnostics = struct {
         { return self.create(.err, token, format, args); }
 
     pub fn create(self: *Diagnostics, message_type: LogType, token: []const u8, comptime format: []const u8, args: anytype) *Message {
+        const allocator = self.arena.allocator();
+        const message_text = std.fmt.allocPrint(allocator, format, args) catch panicOutOfMemory();
+        const message = allocator.create(Message) catch panicOutOfMemory();
+        message.* = Message {
+            .diagnostics = self,
+            .location = self.tokenLocation(token),
+            .message_type = message_type,
+            .token = token,
+            .message = message_text,
+        };
+        return message;
+    }
+
+    fn tokenLocation(self: Diagnostics, token: []const u8) SourceLocation {
         if (self.source.tokenLocation(token)) |location| {
-            const allocator = self.arena.allocator();
-            const message_text = std.fmt.allocPrint(allocator, format, args) catch panicOutOfMemory();
-            const message = allocator.create(Message) catch panicOutOfMemory();
-            message.* = Message {
-                .diagnostics = self,
-                .location = location,
-                .message_type = message_type,
-                .token = token,
-                .message = message_text,
-            };
-            return message;
+            return location;
         }
         else {
             std.debug.panic("token '{s}' ({x:0>16}..{x:0>16}) is not from source '{s}' ({x:0>16}..{x:0>16})", .{
@@ -88,6 +92,7 @@ pub const Diagnostics = struct {
                 self.source.displayName(), @ptrToInt(self.source.text.ptr), @ptrToInt(self.source.text.ptr) + self.source.text.len,
             });
         }
+
     }
 
     pub fn logMessages(self: *Diagnostics) void {
@@ -109,19 +114,17 @@ pub const Diagnostics = struct {
         }.f);
 
         for (messages) |message| {
-            var msg: ?*Message = message;
-            while (msg) |m| : (msg = m.next_in_group) {
-                logger.sourceLog(message.message_type, self.source.*, message.token, "{s}", .{message.message});
-            }
+            logger.sourceLog(message.message_type, self.source.*, message.token, "{s}", .{message.message});
         }
     }
 
-    fn panicOutOfMemory() noreturn {
-        @panic("diagnostics: out of memory");
-    }
 
 
 };
+
+fn panicOutOfMemory() noreturn {
+    @panic("diagnostics: out of memory");
+}
 
 pub const Message = struct {
     diagnostics: *Diagnostics,
@@ -129,19 +132,27 @@ pub const Message = struct {
     message_type: LogType,
     token: []const u8,
     message: []const u8,
-    next_in_group: ?*Message = null,
+    related_information: []const Related = &.{},
 
-    pub fn add(self: *Message, message_type: LogType, token: []const u8, comptime format: []const u8, args: anytype) *Message {
-        const next = self.diagnostics.create(message_type, token, format, args);
-        self.next_in_group = next;
-        return next;
-    }
+    pub const Related = struct {
+        location: SourceLocation,
+        token: []const u8,
+        message: []const u8,
+    };
 
-    pub fn addError(self: *Message, token: []const u8, comptime format: []const u8, args: anytype) *Message {
-        return self.add(.err, token, format, args);
-    }
-
-    pub fn addInfo(self: *Message, token: []const u8, comptime format: []const u8, args: anytype) *Message {
-        return self.add(.info, token, format, args);
+    pub fn addRelated(self: *Message, tokens: []const []const u8, comptime format: []const u8, args: anytype) *Message {
+        const allocator = self.diagnostics.arena.allocator();
+        const related = allocator.alloc(Related, tokens.len) catch panicOutOfMemory();
+        for (tokens) |token, i| {
+            related[i] = Related {
+                .location = self.diagnostics.tokenLocation(token),
+                .token = token,
+                .message = std.fmt.allocPrint(allocator, format, args) catch panicOutOfMemory(),
+            };
+        }
+        if (self.related_information.len > 0) {
+            self.related_information = std.mem.concat(allocator, Related, &.{self.related_information, related}) catch panicOutOfMemory();
+        }
+        return self;
     }
 };

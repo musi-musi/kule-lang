@@ -18,6 +18,7 @@ const Tag = Token.Tag;
 
 const Syntax = language.Syntax;
 
+const RootModule = Syntax.RootModule;
 const Statement = Syntax.Statement;
 const WhereClause = Syntax.WhereClause;
 const Decl = Syntax.Decl;
@@ -36,11 +37,13 @@ const ExpectError = error {
 
 const AllocError = Allocator.Error;
 
-pub fn parseUnit(unit: *CompilationUnit) RuleError!void {
+pub fn parseUnit(unit: *CompilationUnit) AllocError!void {
     var tokens = TokenStream.init(unit.source, &unit.diagnostics);
     const parser = Parser.init(unit, &tokens);
-    unit.syntax = try RSyntax.accept(parser);
-    // return try parser.parse();
+    parser.syntax.root_module = RRootModule.accept(parser) catch |err| {
+        // RRootModule is garunteed to only fail on an alloc error
+        return @errSetCast(AllocError, err);
+    };
 }
 
 fn Rule(comptime Node: type, comptime parse_fn: fn(Parser)RuleError!Node) type 
@@ -58,6 +61,8 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
         fn Expecting(comptime items: anytype) type {
             return RuleExt(Node, name, items, parse_fn);
         }
+
+        const ExpectingName = RuleExt(Node, name, name, parse_fn);
 
         fn acceptOpt(p: Parser) RuleError!?Node {
             if (p.expectOneOpt(start_tags)) |_| {
@@ -82,15 +87,15 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
             return node;
         }
 
-        fn acceptListOpt(p: Parser, comptime end_tags: []const Tag) RuleError!?[]Node {
+        fn acceptListOpt(p: Parser, comptime end_tags: []const Tag) AllocError!?[]Node {
             return acceptDelimListOpt(p, &[_]Tag{}, end_tags);
         }
 
-        fn acceptList(p: Parser, comptime end_tags: []const Tag) RuleError![]Node {
+        fn acceptList(p: Parser, comptime end_tags: []const Tag) AllocError![]Node {
             return acceptDelimList(p, &[_]Tag{}, end_tags);
         }
 
-        fn acceptDelimListOpt(p: Parser, comptime delim_tags: []const Tag, comptime end_tags: []const Tag) RuleError!?[]Node {
+        fn acceptDelimListOpt(p: Parser, comptime delim_tags: []const Tag, comptime end_tags: []const Tag) AllocError!?[]Node {
             if (p.expectOneOpt(start_tags) == null) {
                 return null;
             }
@@ -99,23 +104,42 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
             }
         }
 
-        fn acceptDelimList(p: Parser, comptime delim_tags: []const Tag, comptime end_tags: []const Tag) RuleError![]Node {
+        fn acceptDelimList(p: Parser, comptime delim_tags: []const Tag, comptime end_tags: []const Tag) AllocError![]Node {
+            if (acceptDelimListExt(p, true, delim_tags, end_tags)) |nodes| {
+                return nodes;
+            }
+            else |err| {
+                return @errSetCast(AllocError, err);
+            }
+        }
+
+        fn acceptDelimListErrorOnFailure(p: Parser, comptime delim_tags: []const Tag, comptime end_tags: []const Tag) RuleError![]Node {
+            return acceptDelimListExt(p, false, delim_tags, end_tags);
+        }
+
+        fn acceptDelimListExt(p: Parser, comptime always_return_list: bool, comptime delim_tags: []const Tag, comptime end_tags: []const Tag) RuleError![]Node {
             const allocator = p.allocator();
             var list = std.ArrayListUnmanaged(Node){};
             errdefer if (list.items.len > 0) list.deinit(allocator);
             while (true)  {
                 if (delim_tags.len > 0 and list.items.len > 0) {
-                    _ = try p.expecting(delim_tags ++ end_tags).acceptOne(delim_tags);
+                    _ = p.expecting(delim_tags ++ end_tags).acceptOne(delim_tags) catch {
+                        return list.toOwnedSlice(allocator);
+                    };
                 }
                 if (atEndOfDelimList(p, delim_tags, end_tags)) {
                     break;
                 }
-                if (accept(p.expecting(comptime expecting_list.addTags(end_tags)))) |node| {
+                if (accept(p.expecting(expecting_list))) |node| {
                     try list.append(allocator, node);
                 }
                 else |err| {
-                    return err;
-                    // p.skipToOne(start_tags ++ end_tags ++ delim_tags);
+                    if (always_return_list) {
+                        return list.toOwnedSlice(allocator);
+                    }
+                    else {
+                        return err;
+                    }
                 }
                 if (atEndOfDelimList(p, delim_tags, end_tags)) {
                     break;
@@ -148,13 +172,12 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
     };
 }
 
-const RSyntax = Rule(Syntax, struct {
-    fn f(p: Parser) RuleError!Syntax {
+const RRootModule = Rule(RootModule, struct {
+    fn f(p: Parser) RuleError!RootModule {
         const statement_tags = RStatement.start_tags;
-        _ = try p.expectOne(statement_tags ++ &[_]Tag{.end_of_file});
-        return Syntax {
+        _ = p.expectOne(statement_tags ++ &[_]Tag{.end_of_file}) catch return RootModule{};
+        return RootModule {
             .statements = try RStatement.Expecting(.{.kw_where, statement_tags}).acceptListOpt(p, &.{.end_of_file}),
-            .end_of_file = try p.accept(.end_of_file),
         };
     }
 }.f);
@@ -219,7 +242,7 @@ const RDeclParamList = Rule(Decl.ParamList, struct {
     fn f(p: Parser) RuleError!Decl.ParamList {
         return Decl.ParamList {
             .lparen = try p.accept(.lparen),
-            .params = try RDeclParam.acceptDelimList(p, &[_]Tag{.comma}, &[_]Tag{.rparen}),
+            .params = try RDeclParam.acceptDelimListErrorOnFailure(p, &[_]Tag{.comma}, &[_]Tag{.rparen}),
             .rparen = try p.accept(.rparen),
         };
     }
@@ -229,10 +252,10 @@ const RDeclParam = Rule(Decl.Param, struct {
     fn f(p: Parser) RuleError!Decl.Param {
         return Decl.Param {
             .name = try p.accept(.name),
-            .type_expr = try RTypeExpr.accept(p),
+            .type_expr = try RTypeExpr.accept(p.expecting({})),
         };
     }
-}.f);
+}.f).Named("function parameter").ExpectingName;
 
 const RTypeExpr = Rule(TypeExpr, struct {
     fn f(p: Parser) RuleError!TypeExpr {
@@ -301,7 +324,7 @@ const RExprEvalParamList = Rule(Expr.Eval.ParamList, struct {
     fn f(p: Parser) RuleError!Expr.Eval.ParamList {
         return Expr.Eval.ParamList {
             .lparen = try p.accept(.lparen),
-            .params = try RExpr.Named("parameter value").acceptDelimList(p, &[_]Tag{ .comma }, &[_]Tag{ .rparen }),
+            .params = try RExpr.Named("parameter value").ExpectingName.acceptDelimListErrorOnFailure(p, &[_]Tag{ .comma }, &[_]Tag{ .rparen }),
             .rparen = try p.accept(.rparen),
         };
     }
@@ -542,8 +565,8 @@ const Parser = struct {
 
     unit: *CompilationUnit,
     tokens: *TokenStream,
+    syntax: *Syntax,
     expecting_desc: ?[]const u8 = null,
-
     
 
     const Self = @This();
@@ -552,6 +575,7 @@ const Parser = struct {
         return Self {
             .unit = unit,
             .tokens = tokens,
+            .syntax = unit.initSyntax(),
         };
     }
 
@@ -597,12 +621,15 @@ const Parser = struct {
             return token;
         }
         else {
-            const next = self.tokens.lookahead;
-            const desc = (
-                if (self.expecting_desc) |desc| desc
-                else comptime FormatList.init(tags).toString("or")
-            );
-            self.unit.diagnostics.logError(next.text, "expected {s}, found {}", .{desc, next.tag});
+            if (!self.syntax.is_partial) {
+                const next = self.tokens.lookahead;
+                const desc = (
+                    if (self.expecting_desc) |desc| desc
+                    else comptime FormatList.init(tags).toString("or")
+                );
+                self.syntax.is_partial = true;
+                self.unit.diagnostics.logError(next.text, "expected {s}, found {}", .{desc, next.tag});
+            }
             return ExpectError.Unexpected;
         }
     }

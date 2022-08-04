@@ -250,6 +250,10 @@ pub const Request = struct {
         try self.stream.sendResult(self.id(), result);
     }
 
+    pub fn respondNull(self: Self) !void {
+        try self.stream.sendEmptyResult(self.id());
+    }
+
     pub fn respondError(self: Self, code: ResponseError.Code, comptime format: []const u8, args: anytype) !void {
         try self.stream.sendError(self.id(), code, format, args);
     }

@@ -43,6 +43,7 @@ pub const Validation = struct {
         errdefer source.deinit(self.allocator);
         unit.* = CompilationUnit.init(self.allocator, source);
         kule.compiler.parseUnit(unit) catch {};
+        kule.compiler.analyzeUnitExt(unit, true) catch {};
         try self.units.put(self.allocator, file.uri, unit);
         return unit;
     }
@@ -79,7 +80,7 @@ pub const Validation = struct {
             const lsp_diags = try s.allocator.alloc(lsp.Diagnostic, msgs.len);
             defer s.allocator.free(lsp_diags);
             for (msgs) |msg, i| {
-                lsp_diags[i] = lsp.Diagnostic.fromSrcMsg(msg.*);
+                lsp_diags[i] = try lsp.Diagnostic.fromSrcMsgWithRelated(s.allocator, uri, msg.*);
             }
             const diag_note = .{
                 .uri = uri,

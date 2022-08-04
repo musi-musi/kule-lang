@@ -9,9 +9,12 @@ const Tag = language.Token.Tag;
 
 pub const Syntax = struct {
 
-    statements: ?Statements = &[_]Statement{ },
-    end_of_file: Token,
+    root_module: RootModule = .{},
+    is_partial: bool = false, 
 
+    pub const RootModule = struct {
+        statements: ?Statements = null,
+    };
 
     pub const Statements = []Statement;
 
@@ -140,97 +143,6 @@ pub const Syntax = struct {
                 expr: *Expr,
                 rparen: Token,
             };
-        };
-
-    };
-
-    const ExprNode = struct {
-        expr: Expr_,
-
-        pub fn init(expr: anytype) ExprNode {
-            const node_expr = switch (@TypeOf(expr)) {
-                Expr_.Name => Expr_{ .name = expr },
-                Expr_.Binary => Expr_{ .binary = expr },
-                Expr_.Unary => Expr_{ .unary = expr },
-                Expr_.NumLit => Expr_{ .num_lit = expr },
-                Expr_.DotMember => Expr_{ .dot_member = expr },
-                Expr_.EvalParams => Expr_{ .eval_params = expr },
-                Expr_.Module => Expr_{ .module = expr },
-                Expr_.Import => Expr_{ .import = expr },
-                Expr_.Parens => Expr_{ .parens = expr },
-                else => |Val| @compileError(@typeName(Val) ++ "is not a member of Expr_"),
-            };
-            return ExprNode {
-                .expr = node_expr,
-            };
-        }
-    };
-
-    pub const Expr_ = union(enum) {
-
-        name: Name,
-        binary: Binary,
-        unary: Unary,
-        num_lit: NumLit,
-        dot_member: DotMember,
-        eval_params: EvalParams,
-        module: Module,
-        import: Import,
-        parens: Parens,
-
-        pub const Name = struct {
-            name: Token,
-        };
-
-        pub const Binary = struct {
-            lhs: *ExprNode,
-            operator: Token,
-            rhs: *ExprNode,
-        };
-
-        pub const Unary = struct {
-            operator: Token,
-            operand: *ExprNode,
-        };
-
-        pub const NumLit = struct {
-            literal: Token,
-        };
-
-        pub const DotMember = struct {
-            container: *ExprNode,
-            dot: Token,
-            member_name: Token,
-        };
-
-        pub const EvalParams = struct {
-            subject: *ExprNode,
-            lparen: Token,
-            params: []Param,
-            rparen: Token,
-        };
-
-        pub const Param = struct {
-            expr: ExprNode,
-            comma: ?Token,
-        };
-
-        pub const Module = struct {
-            kw_module: Token,
-            lcurly: Token,
-            statements: []Statement,
-            rcurly: Token,
-        };
-
-        pub const Import = struct {
-            kw_import: Token,
-            path: Token,
-        };
-
-        pub const Parens = struct {
-            lparen: Token,
-            expr: *ExprNode,
-            rparen: Token,
         };
 
     };

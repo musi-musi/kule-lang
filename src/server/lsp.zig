@@ -2,6 +2,8 @@ const std = @import("std");
 const kule = @import("../kule.zig");
 const compiler = kule.compiler;
 
+const Allocator = std.mem.Allocator;
+
 const SrcLoc = compiler.SourceLocation;
 const Message = kule.diagnostics.Message;
 
@@ -18,6 +20,11 @@ pub const Position = struct {
             .character = loc.column,
         };
     }
+};
+
+pub const Location = struct {
+    uri: []const u8,
+    range: Range,
 };
 
 pub const Range = struct {
@@ -39,6 +46,7 @@ pub const Diagnostic = struct {
     codeDescription: []const u8 = "description",
     source: []const u8 = "source",
     message: []const u8 = "",
+    relatedInformation: []const Related = &.{},
 
     pub fn fromSrcMsg(msg: Message) Diagnostic {
         return .{
@@ -50,6 +58,30 @@ pub const Diagnostic = struct {
             .message = msg.message,
         };
     }
+
+    pub fn fromSrcMsgWithRelated(allocator: Allocator, uri: []const u8, msg: Message) !Diagnostic {
+        var diagnostic = fromSrcMsg(msg);
+        if (msg.related_information.len > 0) {
+            const related_info = try allocator.alloc(Related, msg.related_information.len);
+            for (msg.related_information) |related, i| {
+                related_info[i] = Related {
+                    .location = Location {
+                        .uri = uri,
+                        .range = Range.fromSourceLocLen(related.location, related.token.len),
+                    },
+                    .message = related.message,
+                };
+            }
+            diagnostic.relatedInformation = related_info;
+        }
+        return diagnostic;
+    }
+
+    pub const Related = struct {
+        location: Location,
+        message: []const u8,
+    };
+
 };
 
 pub const Severity = enum(int) {

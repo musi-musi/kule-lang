@@ -60,9 +60,19 @@ pub fn @"textDocument/didChange"(s: *Server, request: Request) !void {
                 const uri = p.textDocument.uri;
                 const text = change.text;
                 const file = try s.workspace.addOrUpdateFile(uri, text);
-                _ = try s.validation.validateFile(file);
+                const unit = try s.validation.validateFile(file);
                 try s.validation.publishFileDiagnostics(uri, s);
-
+                if (unit.semantics) |*sem| {
+                    var metas = sem.meta_map.valueIterator();
+                    while (metas.next()) |meta| {
+                        if (meta.value) |value| {
+                            try s.log(.log, "{s}: {} = {}", .{meta.slice, meta.taip, value});
+                        }
+                        else {
+                            try s.log(.log, "{s}: {}", .{meta.slice, meta.taip});
+                        }
+                    }
+                }
 
                 // try s.log(.log, "update {s}", .{file.name});
                 // try s.log(.log, "update {s} ({d} errors)", .{file.name, diags.diag.err_count});

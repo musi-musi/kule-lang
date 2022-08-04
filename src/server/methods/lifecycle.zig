@@ -9,6 +9,7 @@ const Value = json.Value;
 
 const server_capabilities = .{
     .textDocumentSync = 1,
+    .hoverProvider = true,
 };
 
 pub fn initialize(s: *Server, request: Request) !void {

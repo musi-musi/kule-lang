@@ -40,14 +40,14 @@ pub const CompilationUnit = struct {
         return self;
     }
 
-    pub fn initSyntax(self: *Self) *Syntax {
-        self.syntax = .{};
-        return &(self.syntax.?);
+    pub fn initSemantics(self: *Self) *Semantics {
+        self.semantics = Semantics.init(self.arena.allocator(), self.source.displayName());
+        return &(self.semantics.?);
     }
 
-    pub fn initSemantics(self: *Self) *Semantics {
-        self.semantics = .{};
-        return &(self.semantics.?);
+    pub fn initSyntax(self: *Self) *Syntax {
+        self.syntax = Syntax{};
+        return &(self.syntax.?);
     }
 
     pub fn deinit(self: Self) void {

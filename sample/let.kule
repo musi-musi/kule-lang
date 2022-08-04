@@ -1,3 +1,12 @@
+let x = 4
+let types = module {
+    let i32 = signed
+    let u32 = unsigned
+    
+    let comptime_float = num
+        where num = number2
 
-pub let x = 4
-pub let x = 4 
+}
+
+let y(q: unsigned): signed = z
+    where z: types.i32 = 4

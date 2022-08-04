@@ -18,32 +18,30 @@ pub fn main() !void {
     }
     else {
         const action = args[1];
-        if (std.mem.eql(u8, action, "parse")) {
+        if (std.mem.eql(u8, action, "compile")) {
             if (args.len <= 2) {
                 kule.logger.err("must provide at least one source file", .{});
                 // std.os.exit(1);
             }
             for (args[2..]) |arg| {
-                parseFile(allocator, arg) catch {};
+                compileFile(allocator, arg) catch {};
             }
         }
-        // if (std.mem.eql(u8, action, "")) {
-            
-        // }
+        if (std.mem.eql(u8, action, "constants")) {
+            for (language.constants) |constant| {
+                std.log.info("{s}: {} = {}", .{constant.name, constant.taip, constant.value});
+            }
+        }
     }
 }
 
 
-fn parseFile(allocator: Allocator, path: []const u8) !void {
+fn compileFile(allocator: Allocator, path: []const u8) !void {
     var src = try compiler.Source.fromFileLocal(allocator, path);
     defer src.deinitFile(allocator);
     var unit = compiler.CompilationUnit.init(allocator, &src);
     defer unit.deinit();
-    if (compiler.parseUnit(&unit)) {
-        kule.logger.info("parsed file {s}", .{path});
-    }
-    else |err| {
-        kule.logger.err("{s} failed with {d} errors ({s})", .{path, unit.diagnostics.error_count, @errorName(err)});
-    }
+    try compiler.parseUnit(&unit);
+    try compiler.analyzeUnit(&unit);
     unit.diagnostics.logMessages();
 }

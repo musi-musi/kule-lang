@@ -20,6 +20,7 @@ pub const Method = fn(*Server, rpc.Request) anyerror!void;
 const methods = struct {
     usingnamespace @import("methods/lifecycle.zig");
     usingnamespace @import("methods/textDocument.zig");
+    usingnamespace @import("methods/hover.zig");
 };
 
 const method_map = blk: {
