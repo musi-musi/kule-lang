@@ -1,8 +1,8 @@
 const std = @import("std");
-const source = @import("source.zig");
+const compiler = @import("compiler.zig");
 
-const Source = source.Source;
-const SourceLocation = source.SourceLocation;
+const Source = compiler.Source;
+const SourceLocation = compiler.SourceLocation;
 
 pub const LogType = enum {
     err,
@@ -64,25 +64,25 @@ fn logRaw(log_type: LogType, comptime format: []const u8, args: anytype) !void {
     try w.writeByte('\n');
 }
 
-pub fn sourceError(src: Source, token: []const u8, comptime format: []const u8, args: anytype) void {
-    sourceLog(.err, src, token, format, args);
+pub fn sourceError(source: Source, token: []const u8, comptime format: []const u8, args: anytype) void {
+    sourceLog(.err, source, token, format, args);
 }
 
-pub fn sourceInfo(src: Source, token: []const u8, comptime format: []const u8, args: anytype) void {
-    sourceLog(.info, src, token, format, args);
+pub fn sourceInfo(source: Source, token: []const u8, comptime format: []const u8, args: anytype) void {
+    sourceLog(.info, source, token, format, args);
 }
 
-pub fn sourceLog(log_type: LogType, src: Source, token: []const u8, comptime format: []const u8, args: anytype) void {
-    sourceLogRaw(log_type, src, token, format, args) catch |e| panic(e);
+pub fn sourceLog(log_type: LogType, source: Source, token: []const u8, comptime format: []const u8, args: anytype) void {
+    sourceLogRaw(log_type, source, token, format, args) catch |e| panic(e);
 }
 
-fn sourceLogRaw(log_type: LogType, src: Source, token: []const u8, comptime format: []const u8, args: anytype) !void {
+fn sourceLogRaw(log_type: LogType, source: Source, token: []const u8, comptime format: []const u8, args: anytype) !void {
     const w = std.io.getStdErr().writer();
     try writePrefix(w, log_type);
-    const source_name: []const u8 = src.name orelse "???";
-    const location = src.tokenLocation(token) orelse std.debug.panic(
+    const source_name: []const u8 = source.name orelse "???";
+    const location = source.tokenLocation(token) orelse std.debug.panic(
         "token {s} is not in source [{s}]:\n\n{s}",
-        .{token, source_name, src.text}
+        .{token, source_name, source.text}
     );
     try w.print(" {s}:{d}:{d} ", .{ source_name, location.line + 1, location.column + 1});
     switch (log_type) {
@@ -92,7 +92,7 @@ fn sourceLogRaw(log_type: LogType, src: Source, token: []const u8, comptime form
     try w.print(format, args);
     try w.writeAll(ansi.clear);
     try w.writeByte('\n');
-    const line = src.lines[location.line];
+    const line = source.lines[location.line];
     var tab_count: usize = 0;
     try w.print("{s}\n", .{line});
     if (token.len > 0) {

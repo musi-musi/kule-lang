@@ -1,13 +1,14 @@
 const std = @import("std");
 
-const source = @import("source.zig");
+
+const compiler = @import("compiler.zig");
 const logger = @import("logger.zig");
 
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const Source = source.Source;
-const SourceLocation = source.SourceLocation;
+const Source = compiler.Source;
+const SourceLocation = compiler.SourceLocation;
 const LogType = logger.LogType;
 
 
@@ -21,11 +22,11 @@ pub const Diagnostics = struct {
     const MessageList  = std.ArrayListUnmanaged(*Message);
 
 
-    pub fn init(allocator: Allocator, src: *const Source) Diagnostics {
+    pub fn init(allocator: Allocator, source: *const Source) Diagnostics {
         return Diagnostics{
             .messages = .{},
             .arena = ArenaAllocator.init(allocator),
-            .source = src,
+            .source = source,
         };
     }
 

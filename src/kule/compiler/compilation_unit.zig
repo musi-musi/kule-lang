@@ -3,15 +3,20 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const source = @import("../source.zig");
+const compiler = @import("../compiler.zig");
 const diagnostics = @import("../diagnostics.zig");
-const expression = @import("expression.zig");
+const language = @import("../language.zig");
+
+const Semantics = language.Semantics;
 
 
-const Module = expression.Module;
+const Syntax = language.Syntax;
+const Module = Semantics.Module;
+
 const Diagnostics = diagnostics.Diagnostics;
 
-const Source = source.Source;
+const Source = compiler.Source;
+
 
 pub const CompilationUnit = struct {
 
@@ -20,25 +25,34 @@ pub const CompilationUnit = struct {
     arena: ArenaAllocator,
     diagnostics: Diagnostics,
 
-    root_module: Module,
+    syntax: ?Syntax = null,
+    semantics: ?Semantics = null,
 
-    pub fn init(allocator: Allocator, src: *const Source) CompilationUnit {
-        var self = CompilationUnit {
-            .source = src,
+    const Self = @This();
+
+    pub fn init(allocator: Allocator, source: *const Source) Self {
+        var self = Self {
+            .source = source,
             .allocator = allocator,
             .arena = ArenaAllocator.init(allocator),
-            .diagnostics = Diagnostics.init(allocator, src),
-            .root_module = Module {
-                .decls = &.{},
-                .name = src.name,
-            },
+            .diagnostics = Diagnostics.init(allocator, source),
         };
         return self;
     }
 
-    pub fn deinit(self: CompilationUnit) void {
-        self.arena.deinit();
+    pub fn initSyntax(self: *Self) *Syntax {
+        self.syntax = .{};
+        return &(self.syntax.?);
+    }
+
+    pub fn initSemantics(self: *Self) *Semantics {
+        self.semantics = .{};
+        return &(self.semantics.?);
+    }
+
+    pub fn deinit(self: Self) void {
         self.diagnostics.deinit();
+        self.arena.deinit();
     }
 
 };

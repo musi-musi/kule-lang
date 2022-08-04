@@ -1,7 +1,8 @@
 const std = @import("std");
 const kule = @import("../kule.zig");
+const compiler = kule.compiler;
 
-const SrcLoc = kule.SourceLocation;
+const SrcLoc = compiler.SourceLocation;
 const Message = kule.diagnostics.Message;
 
 pub const int = i32;

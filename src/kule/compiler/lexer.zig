@@ -1,124 +1,14 @@
 const std = @import("std");
-const source = @import("../source.zig");
+const language = @import("../language.zig");
+const compiler = @import("../compiler.zig");
 const diagnostics = @import("../diagnostics.zig");
 
-const Source = source.Source;
+const Source = compiler.Source;
 const Diagnostics = diagnostics.Diagnostics;
 
-pub const TokenTag = enum(u32) {
-    invalid,
-    start_of_file,
-    end_of_file,
 
-    identifier,
-    number,
-
-    import_path,
-
-    kw_let,
-    kw_where,
-    kw_module,
-    kw_pub,
-    kw_import,
-    kw_as,
-
-    dot,
-    dotdot,
-
-
-    plus = '+',
-    minus = '-',
-    aster = '*',
-    fslash = '/',
-    equal = '=',
-    lparen = '(',
-    rparen = ')',
-    lcurly = '{',
-    rcurly = '}',
-    comma = ',',
-    colon = ':',
-
-
-    const keyword_map: type = blk: {
-        const Pair = std.meta.Tuple(&.{[]const u8, TokenTag});
-        var pairs: []const Pair = &.{};
-        for (std.enums.values(TokenTag)) |tag| {
-            const tag_name = @tagName(tag);
-            if (std.mem.startsWith(u8, tag_name, "kw_")) {
-                pairs = pairs ++ &[_]Pair{.{ tag_name[3..], tag }};
-            }
-        }
-        break :blk std.ComptimeStringMap(TokenTag, pairs);
-    };
-
-    const single_char_map: [256]?TokenTag = blk: {
-        var map = std.mem.zeroes([256]?TokenTag);
-        for (std.enums.values(TokenTag)) |tag| {
-            if (tag.isSingleChar()) {
-                map[@enumToInt(tag)] = tag;
-            }
-        }
-        break :blk map;
-    };
-
-    fn isSingleChar(tag: TokenTag) bool {
-        const i = @enumToInt(tag);
-        if (i < 256) {
-            const c = @intCast(u8, i);
-            return std.ascii.isPrint(c);
-        }
-        else {
-            return false;
-        }
-    }
-
-    fn isKeyword(tag: TokenTag) bool {
-        return std.mem.startsWith(u8, @tagName(tag), "kw_");
-    }
-
-    pub fn name(comptime tag: TokenTag) []const u8 {
-        if (tag.isKeyword()) {
-            return std.fmt.comptimePrint("\"{s}\"", .{@tagName(tag)[3..]});
-        }
-        else if (tag.isSingleChar()) {
-            return std.fmt.comptimePrint("'{c}'", .{@intCast(u8, @enumToInt(tag))});
-        }
-        else {
-            return switch (tag) {
-                .dot => "'.'",
-                .dotdot => "\"..\"",
-                else => blk: {
-                    const tag_name = @tagName(tag);
-                    var final_name: [tag_name.len]u8 = undefined;
-                    for (tag_name) |c, i| {
-                        if (c == '_') {
-                            final_name[i] = ' ';
-                        }
-                        else {
-                            final_name[i] = c;
-                        }
-                    }
-                    break :blk &final_name;
-                },
-            };
-        }
-    }
-
-};
-
-pub const Token = struct {
-    tag: TokenTag,
-    text: []const u8,
-
-    pub fn init(tag: TokenTag, text: []const u8) Token {
-        return .{
-            .tag = tag,
-            .text = text,
-        };
-    }
-
-};
-
+const Token = language.Token;
+const Tag = Token.Tag;
 
 
 pub const TokenStream = struct {
@@ -133,18 +23,19 @@ pub const TokenStream = struct {
         InvalidToken,
     };
 
-    pub fn init(src: *const Source, diags: *Diagnostics) Error!TokenStream {
+    pub fn init(source: *const Source, diags: *Diagnostics) TokenStream {
         var self: TokenStream = .{
-            .source = src,
-            .rest = src.text,
+            .source = source,
+            .rest = source.text,
             .lookahead = undefined,
             .diagnostics = diags,
         };
-        if (src.text.len == 0) {
-            self.lookahead = Token.init(.end_of_file, src.text);
+        if (source.text.len == 0) {
+            self.lookahead = Token.init(.end_of_file, source.text);
         }
         else {
-            _ = try self.tryNext();
+            self.lookahead = Token.init(.start_of_file, source.text[0..0]);
+            _ = self.next();
         }
         return self;
     }
@@ -167,14 +58,18 @@ pub const TokenStream = struct {
     pub fn tryNext(self: *TokenStream) !Token {
         const token = self.next();
         if (token.tag == .invalid) {
-            while (self.next().tag != .end_of_file) {
-                // lex the rest of the source, logging errors
-                // there will be no way to recover this stream
-                self.advance();
-            }
+            self.skipToEndOfFile();
             return Error.InvalidToken;
         }
         return token;
+    }
+
+    pub fn skipToEndOfFile(self: *TokenStream) void {
+        while (self.next().tag != .end_of_file) {
+            // lex the rest of the source, logging errors
+            // there will be no way to recover this stream
+            self.advance();
+        }
     }
 
     fn advance(self: *TokenStream) void {
@@ -219,14 +114,14 @@ pub const TokenStream = struct {
         }
         switch (text[0]) {
             'a'...'z', 'A'...'Z'
-                => return parseIdentOrKeyword(text),
+                => return parseNameOrKeyword(text),
             '0'...'9'
                 => return self.parseNumber(),
 
             '.' => return self.parseDot(),
             
             else => |c| {
-                if (TokenTag.single_char_map[c]) |tag| {
+                if (Tag.checkSingleChar(c)) |tag| {
                     return Token.init(tag, text[0..1]);
                 }
                 else {
@@ -296,14 +191,14 @@ pub const TokenStream = struct {
         }
     }
 
-    fn parseIdentOrKeyword(text: []const u8) Token {
+    fn parseNameOrKeyword(text: []const u8) Token {
         const token_text = many(text, struct {
             fn f(c: u8) bool {
                 return std.ascii.isAlNum(c) or c == '_';
             }
         }.f);
         return .{
-            .tag = TokenTag.keyword_map.get(token_text) orelse .identifier,
+            .tag = Tag.checkKeyword(token_text) orelse .name,
             .text = token_text,
         };
     }
@@ -311,17 +206,12 @@ pub const TokenStream = struct {
 
     fn parseDot(self: *TokenStream) Token {
         const rest = self.rest;
-        if (rest.len > 1){
-            if (rest[1] == '.') {
-                return Token.init(.dotdot, rest[0..2]);
-            }
-            else {
-                const digits_len = many(rest[1..], std.ascii.isDigit).len;
-                if (digits_len > 0) {
-                    const number = rest[0..digits_len + 1];
-                    self.logError(number, "decimal number literal starts with decimal point. add a single leading 0", .{});
-                    return Token.init(.number, number);
-                }
+        if (rest.len > 1){        
+            const digits_len = many(rest[1..], std.ascii.isDigit).len;
+            if (digits_len > 0) {
+                const number = rest[0..digits_len + 1];
+                self.logError(number, "decimal number literal starts with decimal point. add a single leading 0", .{});
+                return Token.init(.number, number);
             }
         }
         return Token.init(.dot, rest[0..1]);
@@ -406,29 +296,29 @@ pub const TokenStream = struct {
 const testing = std.testing;
 
 test "TokenStream.next()" {
-    var src = try Source.init(testing.allocator, null, "let foo: u32 =\n\t413 + bar(612 * baz.zoo)");
-    defer src.deinit(testing.allocator);
+    var source = try Source.init(testing.allocator, null, "let foo: u32 =\n\t413 + bar(612 * baz.zoo)");
+    defer source.deinit(testing.allocator);
     const tokens = [_]Token {
         Token.init(.kw_let, "let"),
-        Token.init(.identifier, "foo"),
+        Token.init(.name, "foo"),
         Token.init(.colon, ":"),
-        Token.init(.identifier, "u32"),
+        Token.init(.name, "u32"),
         Token.init(.equal, "="),
         Token.init(.number, "413"),
         Token.init(.plus, "+"),
-        Token.init(.identifier, "bar"),
+        Token.init(.name, "bar"),
         Token.init(.lparen, "("),
         Token.init(.number, "612"),
         Token.init(.aster, "*"),
-        Token.init(.identifier, "baz"),
+        Token.init(.name, "baz"),
         Token.init(.dot, "."),
-        Token.init(.identifier, "zoo"),
+        Token.init(.name, "zoo"),
         Token.init(.rparen, ")"),
     };
-    var stream = try TokenStream.init(src);
+    var stream = try TokenStream.init(source);
     for (tokens) |expected| {
         if (try stream.tryNext()) |actual| {
-            try testing.expectEqual(@as(TokenTag, expected.tag), actual.tag);
+            try testing.expectEqual(@as(Tag, expected.tag), actual.tag);
             try testing.expectEqualStrings(expected.text, actual.text);
         }
         else {

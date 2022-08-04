@@ -5,13 +5,15 @@ const workspace = @import("workspace.zig");
 const lsp = @import("lsp.zig");
 const json = @import("json.zig");
 
+const compiler = kule.compiler;
+
 const Allocator = std.mem.Allocator;
 
 const Server = server.Server;
 
-const Source = kule.Source;
+const Source = compiler.Source;
 const Diagnostics = kule.diagnostics.Diagnostics;
-const CompilationUnit = kule.compiler.CompilationUnit;
+const CompilationUnit = compiler.CompilationUnit;
 
 
 const File = workspace.File;

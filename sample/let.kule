@@ -1,5 +1,3 @@
-let x = module {
-    let fdg = 64
-}
 
-let foo : fuck = a 
+pub let x = 4
+pub let x = 4 
