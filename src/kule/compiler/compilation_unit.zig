@@ -41,8 +41,20 @@ pub const CompilationUnit = struct {
     }
 
     pub fn initSemantics(self: *Self) *Semantics {
-        self.semantics = Semantics.init(self.arena.allocator(), self.source.displayName());
+        self.semantics = Semantics.init(self.arena.allocator(), self.name());
         return &(self.semantics.?);
+    }
+
+    pub fn name(self: Self) []const u8 {
+        const str = self.source.displayName();
+        const ext: []const u8 = ".kule";
+        if (std.mem.endsWith(u8, str, ext)) {
+            return str[0..str.len - ext.len];
+        }
+        else {
+            return str;
+        }
+
     }
 
     pub fn initSyntax(self: *Self) *Syntax {

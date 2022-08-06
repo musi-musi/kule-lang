@@ -13,6 +13,10 @@ pub const Token = struct {
         };
     }
 
+    pub fn format(self: Token, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("({s} '{s}')", .{@tagName(self.tag), self.text});
+    }
+
     pub const Tag = enum(u32) {
         invalid,
         start_of_file,
@@ -89,12 +93,15 @@ pub const Token = struct {
             return std.mem.startsWith(u8, @tagName(tag), "kw_");
         }
 
-        pub fn format(tag: Tag, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(tag: Tag, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            const no_quotes = fmt.len == 1 and fmt[0] == 's';
             if (tag.isKeyword()) {
-                try writer.print("\"{s}\"", .{@tagName(tag)[3..]});
+                if (no_quotes) try writer.print("{s}", .{@tagName(tag)[3..]})
+                else try writer.print("\"{s}\"", .{@tagName(tag)[3..]});
             }
             else if (tag.isSingleChar()) {
-                try writer.print("'{c}'", .{@intCast(u8, @enumToInt(tag))});
+                if (no_quotes) try writer.print("{c}", .{@intCast(u8, @enumToInt(tag))})
+                else try writer.print("'{c}'", .{@intCast(u8, @enumToInt(tag))});
             }
             else if (tag == .invalid) {
                 try writer.writeAll("invalid token");

@@ -40,7 +40,7 @@ const AllocError = Allocator.Error;
 pub fn parseUnit(unit: *CompilationUnit) AllocError!void {
     var tokens = TokenStream.init(unit.source, &unit.diagnostics);
     const parser = Parser.init(unit, &tokens);
-    parser.syntax.root_module = RRootModule.accept(parser) catch |err| {
+    parser.syntax.root_module = RRootModule.expect(parser) catch |err| {
         // RRootModule is garunteed to only fail on an alloc error
         return @errSetCast(AllocError, err);
     };
@@ -64,18 +64,18 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
 
         const ExpectingName = RuleExt(Node, name, name, parse_fn);
 
-        fn acceptOpt(p: Parser) RuleError!?Node {
-            if (p.expectOneOpt(start_tags)) |_| {
-                return try accept(p);
+        fn accept(p: Parser) RuleError!?Node {
+            if (p.peekOne(start_tags)) |_| {
+                return try expect(p);
             }
             else {
                 return null;
             }
         }
 
-        fn accept(p: Parser) RuleError!Node {
+        fn expect(p: Parser) RuleError!Node {
             var parser = p;
-            _ = try parser.expectOne(start_tags);
+            _ = try parser.ensureOne(start_tags);
             return try parse_fn(parser);
         }
 
@@ -83,7 +83,7 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
             const allocator = p.allocator();
             const node = try allocator.create(Node);
             errdefer allocator.destroy(node);
-            node.* = try accept(p);
+            node.* = try expect(p);
             return node;
         }
 
@@ -96,7 +96,7 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
         }
 
         fn acceptDelimListOpt(p: Parser, comptime delim_tags: []const Tag, comptime end_tags: []const Tag) AllocError!?[]Node {
-            if (p.expectOneOpt(start_tags) == null) {
+            if (p.peekOne(start_tags) == null) {
                 return null;
             }
             else {
@@ -123,14 +123,14 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
             errdefer if (list.items.len > 0) list.deinit(allocator);
             while (true)  {
                 if (delim_tags.len > 0 and list.items.len > 0) {
-                    _ = p.expecting(delim_tags ++ end_tags).acceptOne(delim_tags) catch {
+                    _ = p.expecting(delim_tags ++ end_tags).expectOne(delim_tags) catch {
                         return list.toOwnedSlice(allocator);
                     };
                 }
                 if (atEndOfDelimList(p, delim_tags, end_tags)) {
                     break;
                 }
-                if (accept(p.expecting(expecting_list))) |node| {
+                if (expect(p.expecting(expecting_list))) |node| {
                     try list.append(allocator, node);
                 }
                 else |err| {
@@ -158,11 +158,11 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
 
         fn atEndOfDelimList(p: Parser, comptime delim_tags: []const Tag, comptime end_tags: []const Tag) bool {
             if (end_tags.len > 0) {
-                if (p.expectOneOpt(end_tags)) |_| {
+                if (p.peekOne(end_tags)) |_| {
                     return true;
                 }
             }
-            else if (p.expectOneOpt(start_tags ++ delim_tags) == null) {
+            else if (p.peekOne(start_tags ++ delim_tags) == null) {
                 return true;
             }
             return false;
@@ -175,7 +175,7 @@ fn RuleExt(comptime Node: type, comptime name: ?[]const u8, comptime expecting_i
 const RRootModule = Rule(RootModule, struct {
     fn f(p: Parser) RuleError!RootModule {
         const statement_tags = RStatement.start_tags;
-        _ = p.expectOne(statement_tags ++ &[_]Tag{.end_of_file}) catch return RootModule{};
+        _ = p.ensureOne(statement_tags ++ &[_]Tag{.end_of_file}) catch return RootModule{};
         return RootModule {
             .statements = try RStatement.Expecting(.{.kw_where, statement_tags}).acceptListOpt(p, &.{.end_of_file}),
         };
@@ -193,8 +193,8 @@ fn RStatements(comptime end_tags: []const Tag) type {
 const RStatement = Rule(Statement, struct {
     fn f(p: Parser) RuleError!Statement {
         return Statement {
-            .kw_pub = p.expecting(.{.kw_pub, RStatementBody.start_tags}).acceptOpt(.kw_pub),
-            .body = try RStatementBody.accept(p),
+            .kw_pub = p.expecting(.{.kw_pub, RStatementBody.start_tags}).accept(.kw_pub),
+            .body = try RStatementBody.expect(p),
         };
     }
 }.f);
@@ -202,7 +202,7 @@ const RStatement = Rule(Statement, struct {
 const RStatementBody = Rule(Statement.Body, struct {
     fn f(p: Parser) RuleError!Statement.Body {
         return Statement.Body {
-            .binding = try RStatementBinding.accept(p),
+            .binding = try RStatementBinding.expect(p),
         };
     }
 }.f);
@@ -210,8 +210,8 @@ const RStatementBody = Rule(Statement.Body, struct {
 const RStatementBinding = Rule(Statement.Binding, struct {
     fn f(p: Parser) RuleError!Statement.Binding {
         return Statement.Binding {
-            .kw_let = try p.accept(.kw_let),
-            .decl = try RDecl.accept(p),
+            .kw_let = try p.expect(.kw_let),
+            .decl = try RDecl.expect(p),
             .where_clauses = try RWhereClause.acceptListOpt(p, &[_]Tag{}),
         };
     }
@@ -220,8 +220,8 @@ const RStatementBinding = Rule(Statement.Binding, struct {
 const RWhereClause = Rule(WhereClause, struct {
     fn f(p: Parser) RuleError!WhereClause {
         return WhereClause {
-            .kw_where = try p.expecting(.{.kw_where, RStatement.start_tags}).accept(.kw_where),
-            .decl = try RDecl.accept(p),
+            .kw_where = try p.expecting(.{.kw_where, RStatement.start_tags}).expect(.kw_where),
+            .decl = try RDecl.expect(p),
         };
     }
 }.f);
@@ -229,11 +229,11 @@ const RWhereClause = Rule(WhereClause, struct {
 const RDecl = Rule(Decl, struct {
     fn f(p: Parser) RuleError!Decl {
         return Decl {
-            .name = try p.accept(.name),
-            .param_list = try RDeclParamList.acceptOpt(p),
-            .type_expr = try RTypeExpr.acceptOpt(p),
-            .equal = try p.accept(.equal),
-            .expr = try RExpr.accept(p.expecting("expression")),
+            .name = try p.expect(.name),
+            .param_list = try RDeclParamList.accept(p),
+            .type_expr = try RTypeExpr.accept(p),
+            .equal = try p.expect(.equal),
+            .expr = try RExpr.expect(p.expecting("expression")),
         };
     }
 }.f);
@@ -241,9 +241,9 @@ const RDecl = Rule(Decl, struct {
 const RDeclParamList = Rule(Decl.ParamList, struct {
     fn f(p: Parser) RuleError!Decl.ParamList {
         return Decl.ParamList {
-            .lparen = try p.accept(.lparen),
+            .lparen = try p.expect(.lparen),
             .params = try RDeclParam.acceptDelimListErrorOnFailure(p, &[_]Tag{.comma}, &[_]Tag{.rparen}),
-            .rparen = try p.accept(.rparen),
+            .rparen = try p.expect(.rparen),
         };
     }
 }.f);
@@ -251,8 +251,8 @@ const RDeclParamList = Rule(Decl.ParamList, struct {
 const RDeclParam = Rule(Decl.Param, struct {
     fn f(p: Parser) RuleError!Decl.Param {
         return Decl.Param {
-            .name = try p.accept(.name),
-            .type_expr = try RTypeExpr.accept(p.expecting({})),
+            .name = try p.expect(.name),
+            .type_expr = try RTypeExpr.expect(p.expecting({})),
         };
     }
 }.f).Named("function parameter").ExpectingName;
@@ -260,8 +260,8 @@ const RDeclParam = Rule(Decl.Param, struct {
 const RTypeExpr = Rule(TypeExpr, struct {
     fn f(p: Parser) RuleError!TypeExpr {
         return TypeExpr {
-            .colon = try p.accept(.colon),
-            .expr = try RExpr.accept(p.expecting("type expression")),
+            .colon = try p.expect(.colon),
+            .expr = try RExpr.expect(p.expecting("type expression")),
         };
     }
 }.f);
@@ -269,7 +269,7 @@ const RTypeExpr = Rule(TypeExpr, struct {
 const RExpr = Rule(Expr, struct {
     fn f(p: Parser) RuleError!Expr {
         return Expr {
-            .expr = try RExprAdd.accept(p),
+            .expr = try RExprAdd.expect(p),
         };
     }
 }.f);
@@ -279,7 +279,7 @@ fn RExprBinary(comptime Node: type, comptime ROperand: type) type {
         const RExprBin = Rule(Node, struct {
             fn f(p: Parser) RuleError!Node {
                 return Node {
-                    .operand = try ROperand.accept(p.expecting("value")),
+                    .operand = try ROperand.expect(p.expecting("value")),
                     .terms = try RTerm.acceptListOpt(p, &[_]Tag{}),
                 };
             }
@@ -287,8 +287,8 @@ fn RExprBinary(comptime Node: type, comptime ROperand: type) type {
         const RTerm = Rule(Node.Term, struct {
             fn f(p: Parser) RuleError!Node.Term {
                 return Node.Term {
-                    .op = try p.expecting(null).acceptOne(Node.Term.op),
-                    .operand = try ROperand.accept(p.expecting("value")),
+                    .op = try p.expecting(null).expectOne(Node.Term.op),
+                    .operand = try ROperand.expect(p.expecting("value")),
                 };
             }
         }.f);
@@ -299,8 +299,8 @@ fn RExprPrefix(comptime Node: type, comptime ROperand: type) type {
     return Rule(Node, struct {
         fn f(p: Parser) RuleError!Node {
             return Node {
-                .op = p.acceptOneOpt(Node.op),
-                .operand = try ROperand.accept(p.expecting("value")),
+                .op = p.acceptOne(Node.op),
+                .operand = try ROperand.expect(p.expecting("value")),
             };
         }
     }.f);
@@ -314,8 +314,8 @@ const RExprNeg = RExprPrefix(Expr.Neg, RExprEval);
 const RExprEval = Rule(Expr.Eval, struct {
     fn f(p: Parser) RuleError!Expr.Eval {
         return Expr.Eval {
-            .function = try RExprAccess.accept(p.expecting("value")),
-            .params = try RExprEvalParamList.acceptOpt(p.expecting(null))
+            .function = try RExprAccess.expect(p.expecting("value")),
+            .params = try RExprEvalParamList.accept(p.expecting(null))
         };
     }
 }.f);
@@ -323,9 +323,9 @@ const RExprEval = Rule(Expr.Eval, struct {
 const RExprEvalParamList = Rule(Expr.Eval.ParamList, struct {
     fn f(p: Parser) RuleError!Expr.Eval.ParamList {
         return Expr.Eval.ParamList {
-            .lparen = try p.accept(.lparen),
+            .lparen = try p.expect(.lparen),
             .params = try RExpr.Named("parameter value").ExpectingName.acceptDelimListErrorOnFailure(p, &[_]Tag{ .comma }, &[_]Tag{ .rparen }),
-            .rparen = try p.accept(.rparen),
+            .rparen = try p.expect(.rparen),
         };
     }
 }.f);
@@ -333,8 +333,8 @@ const RExprEvalParamList = Rule(Expr.Eval.ParamList, struct {
 const RExprAccess = Rule(Expr.Access, struct {
     fn f(p: Parser) RuleError!Expr.Access {
         return Expr.Access {
-            .container = try RExprAtom.accept(p),
-            .member = try RExprAccessMember.acceptOpt(p),
+            .container = try RExprAtom.expect(p),
+            .member = try RExprAccessMember.accept(p),
         };
     }
 }.f);
@@ -342,8 +342,8 @@ const RExprAccess = Rule(Expr.Access, struct {
 const RExprAccessMember = Rule(Expr.Access.Member, struct {
     fn f(p: Parser) RuleError!Expr.Access.Member {
         return Expr.Access.Member {
-            .dot = try p.accept(.dot),
-            .name = try p.expecting("member name").accept(.name),
+            .dot = try p.expect(.dot),
+            .name = try p.expecting("member name").expect(.name),
         };
     }
 }.f);
@@ -351,41 +351,42 @@ const RExprAccessMember = Rule(Expr.Access.Member, struct {
 const RExprAtom = Rule(Expr.Atom, struct {
     fn f(parser: Parser) RuleError!Expr.Atom {
         const p = parser.expecting(comptime nodeStartTags(Expr.Atom));
-        if (p.acceptOpt(.number)) |number| {
+        if (p.accept(.number)) |number| {
             return Expr.Atom {
                 .number = number,
             };
         }
-        else if (p.acceptOpt(.name)) |name| {
+        else if (p.accept(.name)) |name| {
             return Expr.Atom {
                 .name = name,
             };
         }
-        else if (try RExprModule.acceptOpt(p)) |atom| {
-            return atom;
+        else if (p.peek(.kw_module) != null) {
+            return try RExprModule.expect(p);
         }
-        else if (try RExprImport.acceptOpt(p)) |import| {
+        else if (try RExprImport.accept(p)) |import| {
             return Expr.Atom {
                 .import = import,
             };
         }
         else {
-            return RuleError.Unexpected;
+            return Expr.Atom {
+                .parens = try RExprParens.expect(p),
+            };
         }
-
     }
 }.f);
 
 const RExprModule = Rule(Expr.Atom, struct {
     fn f(p: Parser) RuleError!Expr.Atom {
-        const kw_module = try p.accept(.kw_module);
-        if (p.acceptOpt(.lcurly)) |lcurly| {
+        const kw_module = try p.expect(.kw_module);
+        if (p.accept(.lcurly)) |lcurly| {
             return Expr.Atom {
                 .module = .{
                     .kw_module = kw_module,
                     .lcurly = lcurly,
-                    .statements = try RStatements(&.{.rcurly}).acceptOpt(p),
-                    .rcurly = try p.accept(.rcurly),
+                    .statements = try RStatements(&.{.rcurly}).accept(p),
+                    .rcurly = try p.expect(.rcurly),
                 },
             };
         }
@@ -402,8 +403,8 @@ const RExprModule = Rule(Expr.Atom, struct {
 const RExprImport = Rule(Expr.Atom.Import, struct {
     fn f(p: Parser) RuleError!Expr.Atom.Import {
         return Expr.Atom.Import {
-            .kw_import = try p.accept(.kw_import),
-            .import_path = try p.expecting(null).accept(.import_path),
+            .kw_import = try p.expect(.kw_import),
+            .import_path = try p.expecting(null).expect(.import_path),
         };
     }
 }.f);
@@ -411,9 +412,9 @@ const RExprImport = Rule(Expr.Atom.Import, struct {
 const RExprParens = Rule(Expr.Atom.Parens, struct {
     fn f(p: Parser) RuleError!Expr.Atom.Parens {
         return Expr.Atom.Parens {
-            .lparen = try p.accept(.lparen),
+            .lparen = try p.expect(.lparen),
             .expr = try RExpr.acceptAlloc(p.expecting("expression")),
-            .rparen = try p.accept(.rparen),
+            .rparen = try p.expect(.rparen),
         };
     }
 }.f);
@@ -607,17 +608,17 @@ const Parser = struct {
     
 
     fn skipToOne(self: Self, comptime tags: []const Tag) void {
-        while (self.expectOneOpt(tags) == null and self.tokens.lookahead.tag != .end_of_file) {
+        while (self.peekOne(tags) == null and self.tokens.lookahead.tag != .end_of_file) {
             _ = self.tokens.next();
         }
     } 
 
-    fn expect(self: Self, comptime tag: Tag) ExpectError!Token {
-        return self.expectOne(&[_]Tag{tag});
+    fn ensure(self: Self, comptime tag: Tag) ExpectError!Token {
+        return self.ensureOne(&[_]Tag{tag});
     }
 
-    fn expectOne(self: Self, comptime tags: []const Tag) ExpectError!Token {
-        if (self.expectOneOpt(tags)) |token| {
+    fn ensureOne(self: Self, comptime tags: []const Tag) ExpectError!Token {
+        if (self.peekOne(tags)) |token| {
             return token;
         }
         else {
@@ -634,11 +635,11 @@ const Parser = struct {
         }
     }
 
-    fn expectOpt(self: Self, comptime tag: Tag) ?Token {
-        return self.expectOneOpt(&[_]Tag{tag});
+    fn peek(self: Self, comptime tag: Tag) ?Token {
+        return self.peekOne(&[_]Tag{tag});
     }
 
-    fn expectOneOpt(self: Self, comptime tags: []const Tag) ?Token {
+    fn peekOne(self: Self, comptime tags: []const Tag) ?Token {
         const next = self.tokens.lookahead;
         inline for (tags) |tag| {
             if (next.tag == tag) {
@@ -649,12 +650,12 @@ const Parser = struct {
     }
     
 
-    fn accept(self: Self, comptime tag: Tag) ExpectError!Token {
-        return self.acceptOne(&[_]Tag{tag});
+    fn expect(self: Self, comptime tag: Tag) ExpectError!Token {
+        return self.expectOne(&[_]Tag{tag});
     }
 
-    fn acceptOne(self: Self, comptime tags: []const Tag) ExpectError!Token {
-        if (self.expectOne(tags)) |token| {
+    fn expectOne(self: Self, comptime tags: []const Tag) ExpectError!Token {
+        if (self.ensureOne(tags)) |token| {
             _ = self.tokens.next();
             return token;
         }
@@ -663,12 +664,12 @@ const Parser = struct {
         }
     }
     
-    fn acceptOpt(self: Self, comptime tag: Tag) ?Token {
-        return self.acceptOneOpt(&[_]Tag{tag});
+    fn accept(self: Self, comptime tag: Tag) ?Token {
+        return self.acceptOne(&[_]Tag{tag});
     }
 
-    fn acceptOneOpt(self: Self, comptime tags: []const Tag) ?Token {
-        if (self.expectOneOpt(tags)) |token| {
+    fn acceptOne(self: Self, comptime tags: []const Tag) ?Token {
+        if (self.peekOne(tags)) |token| {
             _ = self.tokens.next();
             return token;
         }

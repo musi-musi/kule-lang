@@ -36,18 +36,12 @@ const builtin_taips = blk: {
         taipConst(.taip),
         taipConst(.module),
     };
-    const scalars = [_]Taip.Scalar {
-        Taip.Scalar { .taip = .float,       .mode = .dynamic },
-        Taip.Scalar { .taip = .float,       .mode = .static },
-        Taip.Scalar { .taip = .signed,      .mode = .static },
-        Taip.Scalar { .taip = .unsigned,    .mode = .static },
-    };
-    for (scalars) |scalar| {
+    for (std.enums.values(Taip.Scalar)) |scalar| {
         taips = taips ++ &[_]Constant{taipConst(Taip.init(scalar))};
-        for (std.enums.values(Taip.Dims)) |rows| {
-            taips = taips ++ &[_]Constant{taipConst(Taip.init(scalar.vector(rows)))};
-            for (std.enums.values(Taip.Dims)) |cols| {
-                taips = taips ++ &[_]Constant{taipConst(Taip.init(scalar.matrix(rows, cols)))};
+        for (std.enums.values(Taip.DimCount)) |row_count| {
+            taips = taips ++ &[_]Constant{taipConst(Taip.init(scalar.vector(row_count)))};
+            for (std.enums.values(Taip.DimCount)) |col_count| {
+                taips = taips ++ &[_]Constant{taipConst(Taip.init(scalar.matrix(row_count, col_count)))};
             }
         }
     }

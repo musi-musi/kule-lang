@@ -49,7 +49,7 @@ const Analyzer = struct {
     const Error = error {
         Unresolved,
         TypeMismatch,
-    } || AllocError;
+    } || AllocError || CastError || CoerceError || OpError;
 
     const Self = @This();
 
@@ -60,6 +60,10 @@ const Analyzer = struct {
             .stx = &(unit.syntax.?),
             .populate_metadata = populate_metadata,
         };
+    }
+
+    fn logError(self: Self, token: anytype, comptime format: []const u8, args: anytype) void {
+        self.unit.diagnostics.logError(Sem.nameOf(token), format, args);
     }
 
     fn allocator(self: Self) Allocator {
@@ -255,13 +259,10 @@ const Analyzer = struct {
         const equal = decl_node.equal;
         const expr_taip = try self.analyzeExpr(scope, expr);
         if (expected_taip) |expected| {
-            if (!expr_taip.canCoerceTo(expected)) {
-                self.unit.diagnostics.logError(
-                    equal.text,
-                    "expected {}, found {}",
-                    .{expected, expr_taip},
-                );
-                return Error.TypeMismatch;
+            try self.checkCoerceTaip(equal, expr_taip, expected);
+            if (self.valueOf(expr)) |value| {
+                const coerced = try self.coerceValue(equal, value, expected);
+                try self.setValue(expr, coerced);
             }
         }
         return expr_taip;
@@ -302,23 +303,68 @@ const Analyzer = struct {
                     break :et taip;
                 },
                 *Expr.Add, *Expr.Mul => {
-                    const taip = try self.analyzeExpr(scope, &expr.operand);
+                    var taip = try self.analyzeExpr(scope, &expr.operand);
+                    var value: ?Value = self.valueOf(&expr.operand);
                     if (expr.terms) |terms| {
                         for (terms) |*term| {
-                            _ = try self.analyzeExpr(scope, &term.operand);
+                            const rhs_taip = try self.analyzeExpr(scope, &term.operand);
+                            // _ = rhs_taip;
+                            taip = try self.binaryResultTaip(term.op, taip, rhs_taip);
+                            try self.setTaip(term, taip);
+                            if (value) |lhs_value| {
+                                if (self.valueOf(&term.operand)) |rhs_value| {
+                                    const result = try self.doBinaryOp(term.op, lhs_value, rhs_value);
+                                    try self.setValue(term, result);
+                                    value = result;
+                                }
+                            }
                         }
                     }
-                    if (self.valueOf(&expr.operand)) |value| {
-                        try self.setValue(expr, value);
+                    if (value) |v| {
+                        try self.setValue(expr, v);
                     }
                     break :et taip;
                 },
                 *Expr.Neg => {
-                    const taip = try self.analyzeExpr(scope, &expr.operand);
-                    if (self.valueOf(&expr.operand)) |value| {
-                        try self.setValue(expr, value);
+                    const operand_taip = try self.analyzeExpr(scope, &expr.operand);
+                    if (expr.op) |op| {
+                        if (self.valueOf(&expr.operand)) |operand_value| {
+                            if (op.tag == .minus) {
+                                if (!operand_taip.isNumeric()) {
+                                    // this will always fail because the negate (.minus) operator 
+                                    // is only for numeric types
+                                    // return the correct error and log the right diagnostic
+                                    _ = try self.unaryResultTaip(op, operand_taip);
+                                }
+                                if (operand_taip.numericScalar() == .unsigned) {
+                                    const signed_value = try self.coerceValue(op, operand_value, Taip.init(.signed));
+                                    const result_value = try self.doUnaryOp(op, signed_value);
+                                    const result_taip = result_value.taip;
+                                    // if we are negating a number literal directly, set its type and value
+                                    // this is literally just so that it shows up as signed and negative on diagnostics lol
+                                    if (expr.operand.function.container == .number) {
+                                        try self.setTaip(&expr.operand, result_taip);
+                                        try self.setValue(&expr.operand, result_value);
+                                        try self.setTaip(&expr.operand.function, result_taip);
+                                        try self.setValue(&expr.operand.function, result_value);
+                                        try self.setTaip(&expr.operand.function.container, result_taip);
+                                        try self.setValue(&expr.operand.function.container, result_value);
+                                    }
+                                    try self.setValue(expr, result_value);
+                                    break :et result_taip;
+                                }
+                            }
+                            try self.setValue(expr, try self.doUnaryOp(op, operand_value));
+                        }
+                        const result_taip = try self.unaryResultTaip(op, operand_taip);
+                        break :et result_taip;
                     }
-                    break :et taip;
+                    else {
+                        if (self.valueOf(&expr.operand)) |value| {
+                            try self.setValue(expr, value);
+                        }
+                        break :et operand_taip;
+                    }
                 },
                 *Expr.Eval => {
                     const taip = try self.analyzeExpr(scope, &expr.function);
@@ -385,8 +431,17 @@ const Analyzer = struct {
                 },
                 *Expr.Atom => switch (expr.*) {
                     .number => |number| {
-                        _ = number;
-                        break :et Taip.init(.number);
+                        const value: Value = blk: {
+                            if (std.fmt.parseUnsigned(Taip.TypeOf(.unsigned), number.text, 10)) |unsigned| {
+                                break :blk Value.initConstScalar(.unsigned, unsigned);
+                            }
+                            else |_| if (std.fmt.parseFloat(Taip.TypeOf(.float), number.text)) |float| {
+                                break :blk Value.initConstScalar(.float, float);
+                            }
+                            else |_| unreachable;
+                        };
+                        try self.setValue(expr, value);
+                        break :et value.taip;
                     },
                     .name => |name| {
                         if (scope.findSymbol(name)) |symbol| {
@@ -467,6 +522,177 @@ const Analyzer = struct {
             return null;
         }
     }
+    const CoerceError = language.CoerceError;
+    const CastError = language.CastError;
+
+    const CastTaipError = language.CastTaipError;
+    const CoerceTaipError = language.CoerceTaipError;
+    const CastValueError = language.CastValueError;
+    const CoerceValueError = language.CoerceValueError;
+
+
+    const OpError = BinaryOpError || UnaryOpError;
+
+    const ResultTaipError = language.ResultTaipError;
+
+    const BinaryOpError = language.BinaryOpError;
+    const BinaryOpTaipError = language.BinaryOpTaipError;
+    const BinaryOpValueError = language.BinaryOpValueError;
+    const UnaryOpError = language.UnaryOpError;
+    const UnaryOpTaipError = language.UnaryOpTaipError;
+    const UnaryOpValueError = language.UnaryOpValueError;
+
+
+    const CastMode = enum {
+        cast, coerce,
+    };
+
+    fn logCastOrCoerceError(self: Self, token: anytype, comptime mode: CastMode, err: anytype, a_taip: Taip, a_value: ?Value, b_taip: Taip) @TypeOf(err)!void {
+        const ErrSet = switch (mode) {
+            .cast => CastError,
+            .coerce => CoerceError,
+        };
+        switch(@errSetCast(ErrSet, err)) {
+            ErrSet.Incompatable => self.logError(token, 
+                "cannot " ++ @tagName(mode) ++ " {} to {}",
+                .{a_taip, b_taip}),
+            ErrSet.DimensionMismatch => self.logError(token, 
+                "cannot " ++ @tagName(mode) ++ " {} to {} with different dimensions",
+                .{a_taip, b_taip}),
+            ErrSet.IntegerOverflow => self.logError(token, 
+                "failed to " ++ @tagName(mode) ++ " {} {} to {} without overflow",
+                .{a_taip, a_value.?, b_taip}),
+            ErrSet.NegativeToUnsigned => self.logError(token, 
+                "failed to " ++ @tagName(mode) ++ " negative {} {} to {}",
+                .{a_taip, a_value.?, b_taip}),
+            ErrSet.NanToInteger => self.logError(token, 
+                "failed to " ++ @tagName(mode) ++ " {} {} to {}",
+                .{a_taip, a_value.?, b_taip}),
+            ErrSet.InfinityToInteger => self.logError(token, 
+                "failed to " ++ @tagName(mode) ++ " {} {} to {}",
+                .{a_taip, a_value.?, b_taip}),
+            else => switch (mode) {
+                .cast => return,
+                .coerce => switch (@errSetCast(ErrSet, err)) {
+                    ErrSet.ScalarModeMismatch => self.logError(token, 
+                        "cannot coerce {} to {} without a cast",
+                        .{a_taip, b_taip}),
+                    ErrSet.ScalarInformationLoss => self.logError(token, 
+                        "cannot coerce {} to {} without a cast",
+                        .{a_taip, b_taip}),
+                    else => return,
+                }
+            }
+        }
+        return err;
+    }
+
+    fn logBinaryOpError(self: Self, err: anytype, op: Token, a_taip: Taip, b_taip: Taip, a_value: ?Value, b_value: ?Value) @TypeOf(err)!void {
+        switch (@errSetCast(BinaryOpError, err)) {
+            BinaryOpError.DivideByZero => self.logError(op,
+                "divide by zero {} {s} {}",
+                .{a_value.?, op.text, b_value.?}),
+            BinaryOpError.UnsupportedOperation => self.logError(op,
+                "undefined operation {} {s} {}",
+                .{a_taip, op.text, b_taip}),
+            else => switch (op.tag) {
+                .plus, .minus, .aster, .fslash => {
+                    if (language.binaryResultTaip(op.tag, a_taip, b_taip)) |result_taip| {
+                        if (result_taip.eql(a_taip)) return self.logCastOrCoerceError(op, .coerce, err, a_taip, a_value, b_taip);
+                        if (result_taip.eql(b_taip)) return self.logCastOrCoerceError(op, .coerce, err, b_taip, b_value, a_taip);
+                    }
+                    else |_| {
+                        try self.checkCoerceTaip(op, a_taip, b_taip);
+                        try self.checkCoerceTaip(op, b_taip, a_taip);
+                    }
+                },
+                else => return,
+            },
+        }
+        return err;
+    }
+
+    fn logUnaryOpError(self: Self, err: anytype, op: Token, a_taip: Taip, a_value: ?Value) @TypeOf(err)!void {
+        switch (@errSetCast(UnaryOpError, err)) {
+            UnaryOpError.NegateUnsigned => self.logError(op,
+                "cannot negate {}",
+                .{a_taip}),
+            UnaryOpError.UnsupportedOperation => self.logError(op,
+                "undefined operation {s} {}",
+                .{op.text, a_taip}),
+            else => switch (op.tag) {
+                .plus, .minus => {
+                    if (language.unaryResultTaip(op.tag, a_taip)) |result_taip| {
+                        try self.logCastOrCoerceError(op, .coerce, err, a_taip, a_value.?, result_taip);
+                    }
+                    else |_| {
+                        return;
+                    }
+                },
+                else => return,
+            },
+        }
+        return err;
+    }
+
+
+    fn checkCastTaip(self: Self, token: anytype, a: Taip, b: Taip) CastTaipError!void {
+        errdefer |err| self.logCastOrCoerceError(token, .coerce, err, a, null, b) catch {};
+        try language.checkCastTaip(a, b);
+    }
+
+    fn checkCoerceTaip(self: Self, token: anytype, a: Taip, b: Taip) CoerceTaipError!void {
+        errdefer |err| self.logCastOrCoerceError(token, .coerce, err, a, null, b) catch {};
+        try language.checkCoerceTaip(a, b);
+    }
+
+    fn castValue(self: Self, token: anytype, a: Value, b: Taip) CastError!Value {
+        if (a.taip.eql(b)) {
+            return a;
+        }
+        try self.checkCastTaip(token, a.taip, b);
+        return try self.coerceOrCastValueAssumeSafe(token, .cast, a, b);
+    }
+
+    fn coerceValue(self: Self, token: anytype, a: Value, b: Taip) CoerceError!Value {
+        if (a.taip.eql(b)) {
+            return a;
+        }
+        try self.checkCoerceTaip(token, a.taip, b);
+        return try self.coerceOrCastValueAssumeSafe(token, .coerce, a, b);        
+    }
+
+    fn coerceOrCastValueAssumeSafe(self: Self, token: anytype, comptime mode: CastMode, a: Value, b: Taip) CastValueError!Value {
+        errdefer |err| self.logCastOrCoerceError(token, mode, err, a.taip, a, b) catch {};
+        return try language.castValueAssumeSafe(a, b);
+    }
+
+    fn binaryResultTaip(self: Self, op: Token, a: Taip, b: Taip) BinaryOpTaipError!Taip {
+        errdefer |err| self.logBinaryOpError(err, op, a, b, null, null) catch {};
+        return try language.binaryResultTaip(op.tag, a, b);
+    }
+
+    fn unaryResultTaip(self: Self, op: Token, a: Taip) UnaryOpTaipError!Taip {
+        errdefer |err| self.logUnaryOpError(err, op, a, null) catch {};
+        return try language.unaryResultTaip(op.tag, a);
+    }
+
+
+    fn doBinaryOp(self: Self, op: Token, a: Value, b: Value) BinaryOpError!Value {
+        const res = try self.binaryResultTaip(op, a.taip, b.taip);
+        const av = try self.coerceValue(op, a, res);
+        const bv = try self.coerceValue(op, b, res);
+        errdefer |err| self.logBinaryOpError(err, op, a.taip, b.taip, a, b) catch {};
+        return try language.doBinaryOpAssumeSafe(op.tag, res, av, bv);
+    }
+
+    fn doUnaryOp(self: Self, op: Token, a: Value) UnaryOpError!Value {
+        const res = try self.unaryResultTaip(op, a.taip);
+        const av = try self.coerceValue(op, a, res);
+        errdefer |err| self.logUnaryOpError(err, op, a.taip, a) catch {};
+        return try language.doUnaryOpAssumeSafe(op.tag, res, av);
+    }
+
 
     fn meta(self: Self, node: anytype) AllocError!?*Sem.Metadata {
         if (metaSlice(node)) |slice| {

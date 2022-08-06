@@ -145,7 +145,7 @@ pub const Semantics = struct {
                 }
             }
             else {
-                try writer.writeAll(self.scope.semantics.unit_name);
+                try writer.print("@[{s}]", .{self.scope.semantics.unit_name});
             }
 
         }

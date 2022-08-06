@@ -37,6 +37,14 @@ pub const Taip = union(enum) {
 
     function: *Func,
 
+    pub const Tag = meta.Tag(Taip);
+
+    pub const Scalar = ScalarTaip;
+    pub const Vector = VectorTaip;
+    pub const Matrix = MatrixTaip;
+    pub const Func = FuncTaip;
+    pub const DimCount = TaipDimCount;
+
     pub fn init(value: anytype) Taip {
         const V = @TypeOf(value);
         switch (V) {
@@ -49,7 +57,9 @@ pub const Taip = union(enum) {
                     switch (value) {
                         .taip => return .taip,
                         .module => return .module,
-                        .number => return init(Scalar{ .taip = .float, .mode = .dynamic }),
+                        .float => return init(Scalar.float),
+                        .signed => return init(Scalar.signed),
+                        .unsigned => return init(Scalar.unsigned),
                         else => @compileError(@tagName(value) ++ " is not an accepted Taip tag"),
                     }
                 }
@@ -58,6 +68,21 @@ pub const Taip = union(enum) {
                 }
             }
         }
+    }
+
+    pub fn TypeOf(comptime value: anytype) type {
+        return init(value).Type();
+    }
+
+    pub fn Type(comptime self: Taip) type {
+        switch (self) {
+            .taip => return Taip,
+            .module => return *Module,
+            .function => return *Semantics.Function,
+            else => {},
+        }
+        const field = @field(self, @tagName(self));
+        return field.Type();
     }
 
     pub fn taipOfFunction(allocator: Allocator, function: *Function) !?Taip {
@@ -81,47 +106,19 @@ pub const Taip = union(enum) {
         }
     }
 
-    pub fn canCoerceTo(have: Taip, want: Taip) bool {
-        switch (have) {
-            .scalar => {
-                if (want.scalarComponent()) |want_scalar| {
-                    return have.scalar.canCoerceTo(want_scalar);
-                }
-                else {
-                    return false;
-                }
-            },
-            .vector => return (
-                want == .vector
-                and have.vector.scalar.canCoerceTo(want.vector.scalar)
-                and have.vector.len == want.vector.len
-            ),
-            .matrix => return (
-                want == .matrix
-                and have.matrix.scalar.canCoerceTo(want.matrix.scalar)
-                and have.matrix.rows == want.matrix.rows
-                and have.matrix.cols == want.matrix.cols
-            ),
-            else => return have.eql(want),
-        }
-    }
-
-    fn eql(a: Taip, b: Taip) bool {
+    pub fn eql(a: Taip, b: Taip) bool {
         return meta.activeTag(a) == meta.activeTag(b) and switch(a) {
             .scalar => (
-                a.scalar.taip == b.scalar.taip
-                and a.scalar.mode == b.scalar.mode
+                a.scalar == b.scalar
             ),
             .vector => (
-                a.vector.scalar.taip == b.vector.scalar.taip
-                and a.vector.scalar.mode == b.vector.scalar.mode
-                and a.vector.len == b.vector.len
+                a.vector.scalar == b.vector.scalar
+                and a.vector.dim_count == b.vector.dim_count
             ),
             .matrix => (
-                a.matrix.scalar.taip == b.matrix.scalar.taip
-                and a.matrix.scalar.mode == b.matrix.scalar.mode
-                and a.matrix.rows == b.matrix.rows
-                and a.matrix.cols == b.matrix.cols
+                a.matrix.scalar == b.matrix.scalar
+                and a.matrix.row_count == b.matrix.row_count
+                and a.matrix.col_count == b.matrix.col_count
             ),
             .function => (
                 a.function.return_taip.eql(b.function.return_taip)
@@ -136,13 +133,44 @@ pub const Taip = union(enum) {
         };
     }
 
-    fn scalarComponent(self: Taip) ?Scalar {
-        switch (self) {
-            .scalar => return self.scalar,
-            .vector => return self.vector.scalar,
-            .matrix => return self.matrix.scalar,
-            else => return null,
-        }
+    fn panicNonNumeric() noreturn {
+        @panic("type is not numeric");
+    }
+
+    pub fn isNumeric(self: Taip) bool {
+        return switch (self) {
+            .scalar,
+            .vector,
+            .matrix, => true,
+            else => false,
+        };
+    }
+
+    pub fn numericRowCount(self: Taip) u32 {
+        return switch (self) {
+            .scalar, .vector => 1,
+            .matrix => self.matrix.rowCount(),
+            else => panicNonNumeric(),
+        };
+    }
+
+    pub fn numericColCount(self: Taip) u32 {
+        return switch (self) {
+            .scalar => 1,
+            .vector => self.vector.dimCount(),
+            .matrix => self.matrix.colCount(),
+            else => panicNonNumeric(),
+        };
+    }
+
+
+    pub fn numericScalar(self: Taip) Scalar {
+        return switch (self) {
+            .scalar => self.scalar,
+            .vector => self.vector.scalar,
+            .matrix => self.matrix.scalar,
+            else => panicNonNumeric(),
+        };
     }
 
     pub fn format(self: Taip, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void {
@@ -157,145 +185,141 @@ pub const Taip = union(enum) {
     }
 
 
-    pub const Func = struct {
-        param_taips: []Taip,
-        return_taip: Taip,
-
-        pub fn init(param_taips: []Taip, return_taip: Taip) Func {
-            return .{
-                .param_taips = param_taips,
-                .return_taip = return_taip,
-            };
-        }
 
 
-        fn format(f: Func, writer: anytype) @TypeOf(writer).Error!void {
-            try writer.writeAll("fn(");
-            for (f.param_taips) |taip, i| {
-                if (i > 0) {
-                    try writer.writeAll(", ");
-                }
-                try taip.format("", .{}, writer);
-            }
-            try writer.writeAll("): ");
-            try f.return_taip.format("", .{}, writer);
-        }
-    };
+};
 
-    pub const ScalarTaip = enum(u32) {
-        float = 0,
-        signed = 1,
-        unsigned = 2,
+const FuncTaip = struct {
+    param_taips: []Taip,
+    return_taip: Taip,
 
-        pub fn Type(comptime s: ScalarTaip) type {
-            return switch (s) {
-                .float => f32,
-                .signed => i32,
-                .unsigned => u32,
-            };
-        }
-
-        pub fn Union(comptime Field: fn(type) type) type {
-            return union(ScalarTaip) {
-                float: Field(Type(.float)),
-                signed: Field(Type(.signed)),
-                unsigned: Field(Type(.unsigned)),
-            };
-        }
-
-    };
-
-    pub const Scalar = struct {
-        taip: ScalarTaip,
-        mode: Mode = .static,
-
-        pub const Mode = enum {
-            static,
-            dynamic,
+    pub fn init(param_taips: []Taip, return_taip: Taip) FuncTaip {
+        return .{
+            .param_taips = param_taips,
+            .return_taip = return_taip,
         };
+    }
 
-        pub fn vector(self: Scalar, len: Dims) Vector {
-            return Vector{
-                .scalar = self,
-                .len = len,
-            };
-        }
-
-        pub fn matrix(self: Scalar, rows: Dims, cols: Dims) Matrix {
-            return Matrix{
-                .scalar = self,
-                .rows = rows,
-                .cols = cols,
-            };
-        }
-
-        fn format(self: Scalar, writer: anytype) @TypeOf(writer).Error!void {
-            switch (self.mode) {
-                .static => try writer.writeAll(@tagName(self.taip)),
-                .dynamic => try writer.writeAll("number"),
+    fn format(f: FuncTaip, writer: anytype) @TypeOf(writer).Error!void {
+        try writer.writeAll("fn(");
+        for (f.param_taips) |taip, i| {
+            if (i > 0) {
+                try writer.writeAll(", ");
             }
+            try taip.format("", .{}, writer);
         }
+        try writer.writeAll("): ");
+        try f.return_taip.format("", .{}, writer);
+    }
+};
 
-        pub fn Type(comptime self: Scalar) type {
-            switch (self.mode) {
-                .static => self.taip.Type(),
-                .dynamic => self.taip.Union(struct{
-                    fn f(T: type) type { return T; }
-                }.f),
-            }
-        }
+const ScalarTaip = enum(u32) {
+    float = 0,
+    signed = 1,
+    unsigned = 2,
 
-        fn canCoerceTo(have: Scalar, want: Scalar) bool {
-            if (have.mode == .dynamic) {
-                return true;
-            }
-            else if (want.mode == .dynamic) {
-                return false;
-            } 
-            else {
-                return @enumToInt(have.taip) >= @enumToInt(want.taip);
-            }
-        }
+    pub const Mode = enum {
+        static,
+        dynamic,
     };
 
-    pub const Vector = struct {
-        scalar: Scalar,
-        len: Dims,
+    pub fn vector(self: ScalarTaip, dim_count: TaipDimCount) VectorTaip {
+        return VectorTaip{
+            .scalar = self,
+            .dim_count = dim_count,
+        };
+    }
 
-        pub fn Type(comptime v: Vector) type {
-            return [@enumToInt(v.len)]v.scalar.Type();
-        }
+    pub fn matrix(self: ScalarTaip, row_count: TaipDimCount, col_count: TaipDimCount) MatrixTaip {
+        return MatrixTaip{
+            .scalar = self,
+            .row_count = row_count,
+            .col_count = col_count,
+        };
+    }
 
-        fn format(self: Vector, writer: anytype) @TypeOf(writer).Error!void {
-            try self.scalar.format(writer);
-            try writer.writeByte(@tagName(self.len)[1]);
-        }
+    pub fn taip(self: ScalarTaip) Taip {
+        return Taip {
+            .scalar = self,
+        };
+    }
 
-    };
+    fn format(self: ScalarTaip, writer: anytype) @TypeOf(writer).Error!void {
+        try writer.writeAll(@tagName(self));
+    }
 
-    pub const Matrix = struct {
-        scalar: Scalar,
-        rows: Dims,
-        cols: Dims,
-
-        pub fn Type(comptime v: Vector) type {
-            return [@enumToInt(v.rows)][@enumToInt(v.cols)]v.scalar.Type();
-        }
-        
-        fn format(self: Matrix, writer: anytype) @TypeOf(writer).Error!void {
-            try self.scalar.format(writer);
-            try writer.writeByte(@tagName(self.rows)[1]);
-            try writer.writeByte('x');
-            try writer.writeByte(@tagName(self.cols)[1]);
-        }
-    };
-
-    pub const Dims = enum(u32) {
-        d2 = 2,
-        d3 = 3,
-        d4 = 4,
-    };
+    pub fn Type(comptime s: ScalarTaip) type {
+        return switch (s) {
+            .float => f32,
+            .signed => i32,
+            .unsigned => u32,
+        };
+    }
 
 
+};
 
+const VectorTaip = struct {
+    scalar: ScalarTaip,
+    dim_count: TaipDimCount,
+
+    pub fn dimCount(self: VectorTaip) u32 {
+        return @enumToInt(self.dim_count);
+    }
+
+    pub fn taip(self: VectorTaip) Taip {
+        return Taip {
+            .vector = self,
+        };
+    }
+
+    pub fn Type(comptime v: VectorTaip) type {
+        return [@enumToInt(v.len)]v.scalar.Type();
+    }
+    
+    fn format(self: VectorTaip, writer: anytype) @TypeOf(writer).Error!void {
+        try self.scalar.format(writer);
+        try writer.writeByte(@tagName(self.dim_count)[1]);
+    }
+
+
+
+};
+
+const MatrixTaip = struct {
+    scalar: ScalarTaip,
+    row_count: TaipDimCount,
+    col_count: TaipDimCount,
+
+    pub fn rowCount(self: MatrixTaip) u32 {
+        return @enumToInt(self.row_count);
+    }
+
+    pub fn colCount(self: MatrixTaip) u32 {
+        return @enumToInt(self.col_count);
+    }
+
+    pub fn taip(self: MatrixTaip) Taip {
+        return Taip {
+            .matrix = self,
+        };
+    }
+
+    pub fn Type(comptime v: VectorTaip) type {
+        return [@enumToInt(v.row_count)][@enumToInt(v.col_count)]v.scalar.Type();
+    }
+    
+    fn format(self: MatrixTaip, writer: anytype) @TypeOf(writer).Error!void {
+        try self.scalar.format(writer);
+        try writer.writeByte(@tagName(self.row_count)[1]);
+        try writer.writeByte('x');
+        try writer.writeByte(@tagName(self.col_count)[1]);
+    }
+
+};
+
+const TaipDimCount = enum(u32) {
+    d2 = 2,
+    d3 = 3,
+    d4 = 4,
 };
