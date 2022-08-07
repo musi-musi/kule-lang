@@ -5,8 +5,7 @@ let types = module {
 
 }
 
-
 let x = y
 
 let y: signed2x2 = z + 3
-    where z  = -3
+    where z: types.i32  = -3

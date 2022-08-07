@@ -197,7 +197,7 @@ const Sema = struct {
                     try module.init(sema.scope, sema.sem, module_def.statements);
                     try sema.scoped(module).collectModuleSymbols(module);
                     const mod = sema.meta(expr);
-                    mod.setTypeFromValue(typeMeta(.module));
+                    mod.setTypeFromValue(Meta.initType(.module));
                     mod.value_data = Value.Data { .module = module };
                     switch (sema.scope.container) {
                         .binding => |binding| mod.value_symbol = Symbol.init(binding),
@@ -269,7 +269,7 @@ const Sema = struct {
                         param.setTypeFromValue(param_type_expr);
                     }
                     _ = try sema_body.analyzeDeclBody(type_expr, function.body);
-                    const fn_type = comptime typeMeta(.function);
+                    const fn_type = Meta.initType(.function);
                     self.setTypeFromValue(fn_type);
                     self.value_data = Value.Data { .function = function };
                 },
@@ -331,7 +331,7 @@ const Sema = struct {
                                 if (ktype.isNumeric() and ktype.scalar == .unsigned) {
                                     // if the operand is unsigned but has a known value at compile time,
                                     // it can coerce to signed before negation
-                                    try sema.cast(.coerce, op, self, typeMeta(.signed));
+                                    try sema.cast(.coerce, op, self, Meta.initType(.signed));
                                 }
                             }
                             const operand = self.*;
@@ -433,24 +433,6 @@ const Sema = struct {
         return self.*;
     }
 
-    
-    const type_type = KType.init(.ktype);
-
-    fn typeMeta(comptime type_value: anytype) Meta {
-        comptime {
-            const tv = KType.init(type_value);
-            return analyzeTypeValue(&tv);
-        }
-    }
-
-    fn analyzeTypeValue(type_value: *const KType) Meta {
-        return Meta {
-            .ktype = type_type,
-            .ktype_symbol = Symbol.init(&type_type),
-            .value_data = Value.Data{ .ktype = type_value.* },
-            .value_symbol = Symbol.init(type_value),
-        };
-    }
 
     fn analyzeSymbol(sema: Sema, symbol: Symbol) Error!Meta {
         switch (symbol) {
@@ -465,12 +447,9 @@ const Sema = struct {
             },
             .constant => |constant| return Meta {
                 .ktype = constant.ktype,
-                .ktype_symbol = Symbol.init(&constant.ktype),
                 .value_data = constant.value.data,
                 .value_symbol = symbol,
             },
-            .literal => |literal| return try sema.analyzeExpr(literal),
-            .type_value => |type_value| return analyzeTypeValue(type_value),
         }
     }
 

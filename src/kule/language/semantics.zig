@@ -51,6 +51,19 @@ pub const Semantics = struct {
             complete,
         };
 
+        pub fn initValue(ktype: KType, val: anytype) Meta {
+            const data = Value.init(ktype, val).data;
+            return Meta {
+                .ktype = ktype,
+                .value_data = data,
+            };
+        }
+
+        pub fn initType(type_val: anytype) Meta {
+            const val = KType.init(type_val);
+            return initValue(KType.init(.ktype), val);
+        }
+
         pub fn value(self: Meta) ?Value {
             if (self.ktype != null and self.value_data != null) {
                 return Value.init(self.ktype.?, self.value_data.?);
@@ -540,9 +553,8 @@ pub const Semantics = struct {
         binding: *Binding,
         where_clause: *WhereClause,
         function_param: *Function.Param,
+
         constant: *const Constant,
-        type_value: *const KType,
-        literal: *Expr.Atom,
 
         pub fn init(item: anytype) Symbol {
             const T = @TypeOf(item);
@@ -552,9 +564,6 @@ pub const Semantics = struct {
                 *WhereClause => Symbol { .where_clause = item },
                 *Function.Param => Symbol { .function_param = item },
                 *const Constant => Symbol { .constant = item },
-                *Expr.Atom => Symbol { .literal = item },
-                *KType => Symbol { .type_value = item },
-                *const KType => Symbol { .type_value = item },
                 else => @compileError(@typeName(T) ++ " is not a symbol"),
             };
         }
@@ -565,8 +574,6 @@ pub const Semantics = struct {
                 .where_clause => |where_clause| where_clause.decl.name,
                 .function_param => |function_param| function_param.name,
                 .constant => |constant| constant.name,
-                .literal => |literal| @tagName(literal.*),
-                .type_value => |type_value| @tagName(type_value.*),
             };
         }
 
@@ -576,12 +583,6 @@ pub const Semantics = struct {
                 .where_clause => "where clause",
                 .function_param => "function parameter",
                 .constant => "language constant",
-                .literal => |literal| switch(literal.*) {
-                    .number => "number literal",
-                    .module => "module definition",
-                    else => unreachable,
-                },
-                .type_value => "type",
             };
         }
 
@@ -592,12 +593,6 @@ pub const Semantics = struct {
                     .where_clause => try writer.print("{}", .{self.where_clause}),
                     .function_param => try writer.print("{s}", .{self.function_param.name}),
                     .constant => try writer.print("{s}", .{self.constant.name}),
-                    .literal => switch(self.literal.*) {
-                        .number => try writer.print("{d}", .{self.literal.number.text}),
-                        .module => try writer.print("module {{}}", .{}),
-                        else => {},
-                    },
-                    .type_value => try writer.print("{}", .{self.type_value}),
                 }
             }
             else {
@@ -611,25 +606,15 @@ pub const Semantics = struct {
                     print_kind = true;
                     print_name = true;
                 }
-                if (self == .literal) {
-                    if (print_kind) {
-                        try writer.writeAll(self.kindName());
-                    }
-                    else {
-                        try writer.writeAll(self.name());
-                    }
+                if (print_kind and print_name) {
+                    try writer.print("{s} '{s}'", .{self.kindName(), self.name()});
                 }
-                else {
-                    if (print_kind and print_name) {
-                        try writer.print("{s} '{s}'", .{self.kindName(), self.name()});
-                    }
-                    else if (print_kind) {
-                        try writer.print("{s}", .{self.kindName()});
-                    }
-                    else if (print_name) {
-                        try writer.print("'{s}'", .{self.name()});
+                else if (print_kind) {
+                    try writer.print("{s}", .{self.kindName()});
+                }
+                else if (print_name) {
+                    try writer.print("'{s}'", .{self.name()});
 
-                    }
                 }
             }
         }
