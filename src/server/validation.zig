@@ -43,7 +43,7 @@ pub const Validation = struct {
         errdefer source.deinit(self.allocator);
         unit.* = CompilationUnit.init(self.allocator, source);
         kule.compiler.parseUnit(unit) catch {};
-        kule.compiler.analyzeUnitExt(unit, true) catch {};
+        kule.compiler.analyzeUnit(unit) catch {};
         try self.units.put(self.allocator, file.uri, unit);
         return unit;
     }

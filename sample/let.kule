@@ -6,7 +6,7 @@ let types = module {
 }
 
 
-let x = 4 + (4)
+let x = y
 
-let y = z + 3
-    where z = -3
+let y: signed2x2 = z + 3
+    where z  = -3

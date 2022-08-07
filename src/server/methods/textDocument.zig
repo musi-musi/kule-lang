@@ -60,19 +60,24 @@ pub fn @"textDocument/didChange"(s: *Server, request: Request) !void {
                 const uri = p.textDocument.uri;
                 const text = change.text;
                 const file = try s.workspace.addOrUpdateFile(uri, text);
-                const unit = try s.validation.validateFile(file);
+                // const unit = try s.validation.validateFile(file);
+                _ = try s.validation.validateFile(file);
                 try s.validation.publishFileDiagnostics(uri, s);
-                if (unit.semantics) |*sem| {
-                    var metas = sem.meta_map.valueIterator();
-                    while (metas.next()) |meta| {
-                        if (meta.value) |value| {
-                            try s.log(.log, "{s}: {} = {}", .{meta.slice, meta.taip, value});
-                        }
-                        else {
-                            try s.log(.log, "{s}: {}", .{meta.slice, meta.taip});
-                        }
-                    }
-                }
+
+
+                // if (unit.semantics) |semantics| {
+                //     const start_addr = @ptrToInt(unit.source.text.ptr);
+                //     var metas = semantics.data.addr_map.iterator();
+                //     while (metas.next()) |kv| {
+                //         const addr = kv.key_ptr.* - start_addr;
+                //         const node = kv.value_ptr.*;
+                //         if(semantics.data.map.get(node)) |meta| {
+                //             if (meta.token) |token| {
+                //                 try s.log(.log, "[{d: >4}] '{s}'", .{addr, token});
+                //             }
+                //         }
+                //     }
+                // }
 
                 // try s.log(.log, "update {s}", .{file.name});
                 // try s.log(.log, "update {s} ({d} errors)", .{file.name, diags.diag.err_count});

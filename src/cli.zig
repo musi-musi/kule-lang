@@ -29,7 +29,7 @@ pub fn main() !void {
         }
         if (std.mem.eql(u8, action, "constants")) {
             for (language.constants) |constant| {
-                std.log.info("{s}: {} = {}", .{constant.name, constant.taip, constant.value});
+                std.log.info("{s}: {} = {}", .{constant.name, constant.ktype, constant.value});
             }
         }
     }

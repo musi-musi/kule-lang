@@ -10,7 +10,7 @@ const Tag = Token.Tag;
 const Module = Semantics.Module;
 const Function = Semantics.Function;
 
-const Taip = language.Taip;
+const KType = language.KType;
 const Value = language.Value;
 const Data = Value.Data;
 const Numeric = Data.Numeric;
@@ -20,64 +20,64 @@ const VdSclr = Vd.Scalar;
 const VdVctr = Vd.Vector;
 const VdMtrx = Vd.Matrix;
 
-const DimCount = Taip.DimCount;
+const DimCount = KType.DimCount;
 
 
-pub fn coerceValue(a: Value, b: Taip) CoerceError!Value {
-    if (a.taip.eql(b)) {
+pub fn coerceValue(a: Value, b: KType) CoerceError!Value {
+    if (a.ktype.eql(b)) {
         return a;
     }
-    try checkCoerceTaip(a.taip, b);
+    try checkCoerceKType(a.ktype, b);
     return try coerceValueAssumeSafe(a, b);
 }
-pub fn coerceValueAssumeSafe(a: Value, b: Taip) CoerceValueError!Value {
+pub fn coerceValueAssumeSafe(a: Value, b: KType) CoerceValueError!Value {
     return try castValueAssumeSafe(a, b);
 }
 
-pub const CastTaip = error {
+pub const CastKType = error {
     Incompatable,
     DimensionMismatch,
 };
 
-pub fn checkCastTaip(a: Taip, b: Taip) CastTaip!void {
+pub fn checkCastKType(a: KType, b: KType) CastKType!void {
     switch (a) {
-        .taip, .module, .function => {
+        .ktype, .module, .function => {
             if (!a.eql(b)) {
-                return CastTaip.Incompatable;
+                return CastKType.Incompatable;
             }
         },
         .scalar => switch (b) {
             .scalar, .vector, .matrix => {},
-            else => return CastTaip.Incompatable,
+            else => return CastKType.Incompatable,
         },
         .vector => switch (b) {
             .vector => if (a.vector.dim_count != b.vector.dim_count) {
-                return CastTaip.DimensionMismatch;
+                return CastKType.DimensionMismatch;
             },
-            else => return CastTaip.Incompatable,
+            else => return CastKType.Incompatable,
         },
         .matrix => switch (b) {
             .matrix => if (a.matrix.row_count != b.matrix.row_count or a.matrix.col_count != b.matrix.col_count) {
-                return CastTaip.DimensionMismatch;
+                return CastKType.DimensionMismatch;
             },
-            else => return CastTaip.Incompatable,
+            else => return CastKType.Incompatable,
         }
     }
 }
 
-pub const CoerceTaipError = error {
+pub const CoerceKTypeError = error {
     ScalarModeMismatch,
     ScalarInformationLoss,
-} || CastTaip;
+} || CastKType;
 
-pub fn checkCoerceTaip(a: Taip, b: Taip) CoerceTaipError!void {
-    try checkCastTaip(a, b);
+pub fn checkCoerceKType(a: KType, b: KType) CoerceKTypeError!void {
+    try checkCastKType(a, b);
     if (a.isNumeric() and b.isNumeric()) {
         const as = a.numericScalar();
         const bs = b.numericScalar();
         
         if (@enumToInt(as) < @enumToInt(bs)) {
-            return CoerceTaipError.ScalarInformationLoss;
+            return CoerceKTypeError.ScalarInformationLoss;
         }
     }
 }
@@ -89,24 +89,24 @@ pub const CastValueError = error {
     InfinityToInteger,
 };
 
-pub const CastError = CastValueError || CastTaip;
+pub const CastError = CastValueError || CastKType;
 
 pub const CoerceValueError = error {
 } || CastValueError;
 
-pub const CoerceError = CoerceValueError || CoerceTaipError;
+pub const CoerceError = CoerceValueError || CoerceKTypeError;
 
-pub fn castValue(a: Value, b: Taip) CastError!Value {
-    if (a.taip.eql(b)) {
+pub fn castValue(a: Value, b: KType) CastError!Value {
+    if (a.ktype.eql(b)) {
         return a;
     }
-    try checkCastTaip(a, b);
+    try checkCastKType(a, b);
     return try castValueAssumeSafe(a, b);
 }
 
-pub fn castValueAssumeSafe(a: Value, b: Taip) CastValueError!Value {
-    switch (a.taip) {
-        .taip, .module, .function => return a,
+pub fn castValueAssumeSafe(a: Value, b: KType) CastValueError!Value {
+    switch (a.ktype) {
+        .ktype, .module, .function => return a,
         .scalar, .vector, .matrix => {
             const row_count = b.numericRowCount();
             const col_count = b.numericColCount();
@@ -117,10 +117,10 @@ pub fn castValueAssumeSafe(a: Value, b: Taip) CastValueError!Value {
                 var c: usize = 0;
                 while (c < col_count) : (c += 1) {
                     const a_num = (
-                        if (a.taip == .scalar) a_numeric.n[0][0]
+                        if (a.ktype == .scalar) a_numeric.n[0][0]
                         else a_numeric.n[r][c]
                     );
-                    result_numeric.n[r][c] = switch (a.taip.numericScalar()) {
+                    result_numeric.n[r][c] = switch (a.ktype.numericScalar()) {
                         .float => switch (b.numericScalar()) {
                             .float => try castScalar(.float, .float, a_num),
                             .signed => try castScalar(.float, .signed, a_num),
@@ -144,10 +144,10 @@ pub fn castValueAssumeSafe(a: Value, b: Taip) CastValueError!Value {
     }
 }
 
-fn castScalar(comptime a_scalar: Taip.Scalar, comptime b_scalar: Taip.Scalar, a_num: Numeric.N) CastValueError!Numeric.N {
-    const Float = comptime Taip.Scalar.float.Type();
-    const Signed = comptime Taip.Scalar.signed.Type();
-    const Unsigned = comptime Taip.Scalar.unsigned.Type();
+fn castScalar(comptime a_scalar: KType.Scalar, comptime b_scalar: KType.Scalar, a_num: Numeric.N) CastValueError!Numeric.N {
+    const Float = comptime KType.Scalar.float.Type();
+    const Signed = comptime KType.Scalar.signed.Type();
+    const Unsigned = comptime KType.Scalar.unsigned.Type();
     const umax = comptime std.math.maxInt(Unsigned);
     const smax = comptime std.math.maxInt(Signed);
     const smin = comptime std.math.minInt(Signed);
@@ -200,47 +200,47 @@ fn castScalar(comptime a_scalar: Taip.Scalar, comptime b_scalar: Taip.Scalar, a_
 
 }
 
-pub const ResultTaipError = error {
+pub const ResultKTypeError = error {
     UnsupportedOperation,
 };
 
-pub const BinaryOpTaipError = ResultTaipError || CoerceTaipError;
+pub const BinaryOpKTypeError = ResultKTypeError || CoerceKTypeError;
 
 
-pub fn binaryResultTaip(op: Tag, a: Taip, b: Taip) BinaryOpTaipError!Taip {
+pub fn binaryResultKType(op: Tag, a: KType, b: KType) BinaryOpKTypeError!KType {
     switch (op) {
         .plus, .minus, .aster, .fslash, => {
 
-            const taip = blk: {
-                checkCoerceTaip(a, b) catch {
-                    try checkCoerceTaip(b, a);
+            const ktype = blk: {
+                checkCoerceKType(a, b) catch {
+                    try checkCoerceKType(b, a);
                     break :blk a;
                 };
                 break :blk b;
             };
-            if (!taip.isNumeric()) {
-                return BinaryOpTaipError.UnsupportedOperation;
+            if (!ktype.isNumeric()) {
+                return BinaryOpKTypeError.UnsupportedOperation;
             }
             else {
-                return taip;
+                return ktype;
             }
         },
         else => unreachable,
     }
 }
 
-pub const UnaryOpTaipError = error {
+pub const UnaryOpKTypeError = error {
     NegateUnsigned,
-} || ResultTaipError;
+} || ResultKTypeError;
 
-pub fn unaryResultTaip(op: Tag, a: Taip) UnaryOpTaipError!Taip {
+pub fn unaryResultKType(op: Tag, a: KType) UnaryOpKTypeError!KType {
     switch (op) {
         .plus, .minus => {
             if (!a.isNumeric()) {
-                return UnaryOpTaipError.UnsupportedOperation;
+                return UnaryOpKTypeError.UnsupportedOperation;
             }
             else if (op == .minus and a.numericScalar() == .unsigned) {
-                return UnaryOpTaipError.NegateUnsigned;
+                return UnaryOpKTypeError.NegateUnsigned;
             }
             else {
                 return a;
@@ -254,14 +254,14 @@ pub fn unaryResultTaip(op: Tag, a: Taip) UnaryOpTaipError!Taip {
 pub const BinaryOpValueError = error {
     DivideByZero,
 } || CoerceError;
-pub const BinaryOpError = BinaryOpTaipError || BinaryOpValueError;
+pub const BinaryOpError = BinaryOpKTypeError || BinaryOpValueError;
 
 pub fn doBinaryOp(op: Tag,  a: Value, b: Value) BinaryOpError!Value {
-    const res = try binaryResultTaip(op, a.taip, b.taip);
+    const res = try binaryResultKType(op, a.ktype, b.ktype);
     return try doBinaryOpAssumeSafe(op, res, a, b);
 }
 
-pub fn doBinaryOpAssumeSafe(op: Tag, res: Taip, a: Value, b: Value) BinaryOpValueError!Value {
+pub fn doBinaryOpAssumeSafe(op: Tag, res: KType, a: Value, b: Value) BinaryOpValueError!Value {
     switch (op) {
         .plus, .minus, .aster, .fslash => {
             const row_count = res.numericRowCount();
@@ -287,7 +287,7 @@ pub fn doBinaryOpAssumeSafe(op: Tag, res: Taip, a: Value, b: Value) BinaryOpValu
 }
 
 
-fn doScalarBinaryOp(op: Tag, comptime scalar: Taip.Scalar, a_num: Numeric.N, b_num: Numeric.N) BinaryOpValueError!Numeric.N{
+fn doScalarBinaryOp(op: Tag, comptime scalar: KType.Scalar, a_num: Numeric.N, b_num: Numeric.N) BinaryOpValueError!Numeric.N{
     const a = Numeric.fromBits(scalar.Type(), a_num);
     const b = Numeric.fromBits(scalar.Type(), b_num);
     if (op == .fslash and b == 0) {
@@ -314,14 +314,14 @@ fn doScalarBinaryOp(op: Tag, comptime scalar: Taip.Scalar, a_num: Numeric.N, b_n
 
 pub const UnaryOpValueError = error {
 } || CoerceError;
-pub const UnaryOpError = UnaryOpTaipError || UnaryOpValueError;
+pub const UnaryOpError = UnaryOpKTypeError || UnaryOpValueError;
 
 pub fn doUnaryOp(op: Tag, value: Value) UnaryOpError!Value {
-    const res = try unaryResultTaip(op, value);
+    const res = try unaryResultKType(op, value);
     return try doUnaryOpAssumeSafe(op, res, value);
 }
 
-pub fn doUnaryOpAssumeSafe(op: Tag, res: Taip, value: Value) UnaryOpValueError!Value {
+pub fn doUnaryOpAssumeSafe(op: Tag, res: KType, value: Value) UnaryOpValueError!Value {
     switch (op) {
         .plus => return value,
         else => {
@@ -345,7 +345,7 @@ pub fn doUnaryOpAssumeSafe(op: Tag, res: Taip, value: Value) UnaryOpValueError!V
     }
 }
 
-fn doScalarUnaryOp(op: Tag, comptime scalar: Taip.Scalar, value_num: Numeric.N) UnaryOpValueError!Numeric.N {
+fn doScalarUnaryOp(op: Tag, comptime scalar: KType.Scalar, value_num: Numeric.N) UnaryOpValueError!Numeric.N {
     if (op == .minus) {
         const T = scalar.Type();
         return Numeric.toBits(
@@ -358,24 +358,24 @@ fn doScalarUnaryOp(op: Tag, comptime scalar: Taip.Scalar, value_num: Numeric.N) 
     }
 }
 
-pub fn taipValueSupportsEval(a: Taip) bool {
+pub fn ktypeValueSupportsEval(a: KType) bool {
     return a == .function;
 }
 
-pub fn taipValueEvalReturnTaip(a: Taip) ?Taip {
+pub fn ktypeValueEvalReturnKType(a: KType) ?KType {
     switch (a) {
-        .function => return a.function.return_taip,
+        .function => return a.function.return_ktype,
         else => return null,
     }
 }
 
-pub fn taipSupportsStaticMemberAccess(a: Taip) bool {
+pub fn ktypeSupportsStaticMemberAccess(a: KType) bool {
     switch (a) {
         .vector, .matrix => return true,
         else => return false,
     }
 }
-pub fn taipSupportsValueMemberAccess(a: Taip) bool {
+pub fn ktypeSupportsValueMemberAccess(a: KType) bool {
     switch (a) {
         .module, .vector => return true,
         else => return false,
@@ -386,8 +386,8 @@ fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-pub fn taipStaticMemberValue(a: Taip, member_name: []const u8) ?Value {
-    const number = Taip.init(.number);
+pub fn ktypeStaticMemberValue(a: KType, member_name: []const u8) ?Value {
+    const number = KType.init(.number);
     switch (a) {
         .vector => {
             if (eql(member_name, "len")) {
@@ -397,7 +397,7 @@ pub fn taipStaticMemberValue(a: Taip, member_name: []const u8) ?Value {
                 });
             }
             else if (eql(member_name, "scalar")) {
-                return Value.init(.taip, Taip.init(a.vector.scalar));
+                return Value.init(.ktype, KType.init(a.vector.scalar));
             }
         },
         .matrix => {
@@ -414,7 +414,7 @@ pub fn taipStaticMemberValue(a: Taip, member_name: []const u8) ?Value {
                 });
             }
             else if (eql(member_name, "scalar")) {
-                return Value.init(.taip, Taip.init(a.matrix.scalar));
+                return Value.init(.ktype, KType.init(a.matrix.scalar));
             }
         },
         else => {},
@@ -422,7 +422,7 @@ pub fn taipStaticMemberValue(a: Taip, member_name: []const u8) ?Value {
     return null;
 }
 
-pub fn taipValueMemberTaip(a: Taip, member_name: []const u8) ?Taip {
+pub fn ktypeValueMemberKType(a: KType, member_name: []const u8) ?KType {
     switch (a) {
         .vector => {
             if (member_name.len > 1) {

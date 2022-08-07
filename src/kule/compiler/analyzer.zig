@@ -11,7 +11,7 @@ const Allocator = std.mem.Allocator;
 const Arena = std.heap.ArenaAllocator;
 
 
-const Taip = language.Taip;
+const KType = language.KType;
 const Value = language.Value;
 const Constant = language.Constant;
 
@@ -20,30 +20,45 @@ const Token = language.Token;
 const Stx = language.Syntax;
 const Sem = language.Semantics;
 
+const SemData = Sem.Data;
+const Meta = Sem.Meta;
+
 const Symbol = Sem.Symbol;
 const Scope = Sem.Scope;
 
-const DepInfo = Sem.DepInfo;
+const NodeKType = Sem.NodeKType;
+const NodeValue = Sem.NodeValue;
+const NodeDep = Sem.NodeDep;
 
 
 const Expr = Stx.Expr;
 
 const AllocError = Allocator.Error;
 
-pub fn analyzeUnit(unit: *CompilationUnit) Analyzer.Error!void {
-    try analyzeUnitExt(unit, false);
+pub fn analyzeUnit(unit: *CompilationUnit) Sema.Error!void {
+    const sem = unit.initSemantics();
+    try sem.module.init(null, sem, unit.syntax.?.root_module.statements);
+    const analyzer = (Sema {
+        .unit = unit,
+        .sem = sem,
+        .stx = &(unit.syntax.?),
+        .scope = undefined,
+        .data = &sem.data,
+    }).scoped(&sem.module.scope);
+    try analyzer.collectModuleSymbols(&sem.module);
+    try analyzer.analyzeModule(&sem.module);
 }
 
-pub fn analyzeUnitExt(unit: *CompilationUnit, populate_metadata: bool) Analyzer.Error!void {
-    const analyzer = Analyzer.init(unit, populate_metadata);
-    try analyzer.analyzeRootModule();
-}
-
-const Analyzer = struct {
+const Sema = struct {
     unit: *CompilationUnit,
     sem: *Sem,
     stx: *Stx,
-    populate_metadata: bool = false,
+    
+    // current context
+    scope: *Scope,
+    data: *SemData,
+    expected_type: Meta = .{},
+
 
 
     const Error = error {
@@ -51,135 +66,146 @@ const Analyzer = struct {
         TypeMismatch,
     } || AllocError || CastError || CoerceError || OpError;
 
-    const Self = @This();
 
-    fn init(unit: *CompilationUnit, populate_metadata: bool) Self {
-        return Self {
-            .unit = unit,
-            .sem = unit.initSemantics(),
-            .stx = &(unit.syntax.?),
-            .populate_metadata = populate_metadata,
+    fn scoped(sema: Sema, scope_container: anytype) Sema {
+        const T = @TypeOf(scope_container);
+        const scope = switch (T) {
+            *Scope => scope_container,
+            *Sem.Decl => &scope_container.body_scope,
+            *Sem.Binding => &scope_container.decl.body_scope,
+            *Sem.WhereClause => &scope_container.decl.body_scope,
+            *Sem.Module => &scope_container.scope,
+            else => @compileError(@typeName(T) ++ " does not contain a scope"),
         };
+        var inner = sema;
+        inner.scope = scope;
+        return inner;
     }
 
-    fn logError(self: Self, token: anytype, comptime format: []const u8, args: anytype) void {
-        self.unit.diagnostics.logError(Sem.nameOf(token), format, args);
+    fn withData(sema: Sema, data: *SemData) Sema {
+        var inner = sema;
+        inner.data = data;
+        return inner;
     }
 
-    fn allocator(self: Self) Allocator {
-        return self.unit.arena.allocator();
+    fn expectingType(sema: Sema, expected_type: Meta) Sema {
+        var inner = sema;
+        inner.expected_type = expected_type;
+        return inner;
+
     }
 
-    fn analyzeRootModule(self: Self) Error!void {
-        try self.collectModuleSymbols(null, &self.sem.module, self.stx.root_module.statements);
-        try self.analyzeModule(&self.sem.module);
+    fn initMeta(sema: Sema, node_ptr: anytype) AllocError!void {
+        try sema.data.initMeta(sema.allocator(), node_ptr);
     }
 
-    fn setTaip(self: Self, node: anytype, taip: Taip) AllocError!void {
-        if (self.populate_metadata) {
-            if (try self.meta(node)) |m| {
-                m.taip = taip;
-            }
-        }
-        try self.sem.setTaip(node, taip);
+    fn logError(sema: Sema, token: anytype, comptime format: []const u8, args: anytype) void {
+        sema.unit.diagnostics.logError(Sem.nameOf(token), format, args);
     }
 
-    fn setValue(self: Self, node: anytype, value: Value) AllocError!void {
-        if (self.populate_metadata) {
-            if (try self.meta(node)) |m| {
-                m.value = value;
-            }
-        }
-        try self.sem.setValue(node, value);
+    fn allocator(sema: Sema) Allocator {
+        return sema.unit.arena.allocator();
     }
 
-    fn setDepInfo(self: Self, node: anytype, dep_info: DepInfo) AllocError!void {
-        try self.sem.setDepInfo(node, dep_info);
+    fn meta(sema: Sema, node_ptr: anytype) *Meta {
+        return sema.data.ptr(node_ptr);
     }
 
-    fn taipOf(self: Self, node: anytype) ?Taip
-        { return self.sem.taipOf(node); }
-    fn valueOf(self: Self, node: anytype) ?Value
-        { return self.sem.valueOf(node); }
-    fn depInfoOf(self: Self, node: anytype) ?DepInfo
-        { return self.sem.depInfoOf(node); }
 
-    fn collectModuleSymbols(self: Self, parent: ?*Scope, module: *Sem.Module, statement_nodes: ?Stx.Statements) AllocError!void {
-        try module.init(parent, self.sem, statement_nodes);
-        const scope = &module.scope;
+
+    // ----------
+    // collection
+    // ----------
+
+
+    fn collectModuleSymbols(sema: Sema, module: *Sem.Module) AllocError!void {
         for (module.statements) |*statement| {
             switch (statement.body) {
                 .binding => {
-                    _ = try self.tryAddSymbol(scope, &statement.body.binding);
+                    _ = try sema.tryAddSymbol(&statement.body.binding);
                 },
             }
         }
         for (module.statements) |*statement| {
             switch (statement.body) {
                 .binding => {
-                    try self.collectBindingSymbols(&statement.body.binding);
+                    try sema.collectBindingSymbols(&statement.body.binding);
                 },
             }
         }
     }
 
-    fn collectBindingSymbols(self: Self, binding: *Sem.Binding) AllocError!void {
-        const scope = &binding.decl.body_scope;
+    fn collectBindingSymbols(sema: Sema, binding: *Sem.Binding) AllocError!void {
+        const body_scope = &binding.decl.body_scope;
         for (binding.where_clauses) |*where_clause| {
-            _ = try self.tryAddSymbol(scope, where_clause);
+            _ = try sema.scoped(body_scope).tryAddSymbol(where_clause);
         }
         for (binding.where_clauses) |*where_clause| {
-            try self.collectDeclSymbols(&where_clause.decl);
+            try sema.collectDeclSymbols(&where_clause.decl);
         }
-        try self.collectDeclSymbols(&binding.decl);
+        try sema.collectDeclSymbols(&binding.decl);
     }
 
-    fn collectDeclSymbols(self: Self, decl: *Sem.Decl) AllocError!void {
-        const scope = &decl.body_scope;
+    fn collectDeclSymbols(sema: Sema, decl: *Sem.Decl) AllocError!void {
+        const body_scope = &decl.body_scope;
+        try sema.initMeta(decl);
+        if (decl.type_expr) |type_expr| {
+            try sema.collectExprSymbols(type_expr);
+        }
         switch (decl.body) {
-            .function => |function| {
+            .function => {
+                const function = &decl.body.function;
                 for (function.params) |*param| {
-                    _ = try self.tryAddSymbol(scope, param);
-                    try self.collectExprSymbols(scope.parent.?, param.taip_expr);
+                    _ = try body_scope.tryAddSymbol(param);
+                    try sema.collectExprSymbols(param.type_expr);
                 }
-                try self.collectExprSymbols(scope, function.body);
+                try sema.scoped(body_scope).collectExprSymbols(function.body);
             },
             .direct => |expr| {
-                try self.collectExprSymbols(scope, expr);
+                try sema.scoped(body_scope).collectExprSymbols(expr);
             }
         }
     }
 
-    fn collectExprSymbols(self: Self, parent_scope: *Scope, expr: anytype) AllocError!void {
+    fn collectExprSymbols(sema: Sema, expr: anytype) AllocError!void {
         const Node = @TypeOf(expr);
+        try sema.initMeta(expr);
         switch (Node) {
-            *Expr => try self.collectExprSymbols(parent_scope, &expr.expr),
+            *Expr => try sema.collectExprSymbols(&expr.expr),
             *Expr.Add, *Expr.Mul => {
-                try self.collectExprSymbols(parent_scope, &expr.operand);
+                try sema.collectExprSymbols(&expr.operand);
                 if (expr.terms) |terms| {
                     for (terms) |*term| {
-                        try self.collectExprSymbols(parent_scope, &term.operand);
-
+                        try sema.initMeta(term);
+                        try sema.collectExprSymbols(&term.operand);
                     }
                 }
             },
-            *Expr.Neg => try self.collectExprSymbols(parent_scope, &expr.operand),
+            *Expr.Neg => try sema.collectExprSymbols(&expr.operand),
             *Expr.Eval => {
-                try self.collectExprSymbols(parent_scope, &expr.function);
+                try sema.collectExprSymbols(&expr.function);
                 if (expr.params) |params| {
                     for (params.params) |*param| {
-                        try self.collectExprSymbols(parent_scope, param);
+                        try sema.collectExprSymbols(param);
                     }
                 }
             },
-            *Expr.Access => try self.collectExprSymbols(parent_scope, &expr.container),
+            *Expr.Access => try sema.collectExprSymbols(&expr.container),
             *Expr.Atom => switch (expr.*) {
                 .module => |module_def| {
-                    const module = try self.allocator().create(Sem.Module);
-                    try self.setValue(expr, Value.init(.module, module));
-                    try self.collectModuleSymbols(parent_scope, module, module_def.statements);
+                    const module = try sema.allocator().create(Sem.Module);
+                    try module.init(sema.scope, sema.sem, module_def.statements);
+                    try sema.scoped(module).collectModuleSymbols(module);
+                    const mod = sema.meta(expr);
+                    mod.setTypeFromValue(typeMeta(.module));
+                    mod.value_data = Value.Data { .module = module };
+                    switch (sema.scope.container) {
+                        .binding => |binding| mod.value_symbol = Symbol.init(binding),
+                        .where_clause => |where_clause| mod.value_symbol = Symbol.init(where_clause),
+                        else => {},
+                    }
                 },
-                .parens => |parens| try self.collectExprSymbols(parent_scope, parens.expr),
+                .parens => |parens| try sema.collectExprSymbols(parens.expr),
                 else => {},
             },
             else => @compileError(@typeName(Node) ++ " is not an expression node"),
@@ -187,331 +213,273 @@ const Analyzer = struct {
 
     }
 
-    fn analyzeModule(self: Self, module: *Sem.Module) Error!void {
+    // --------
+    // analysis
+    // --------
+
+    fn analyzeModule(sema: Sema, module: *Sem.Module) Error!void {
         for (module.statements) |*statement| {
             switch (statement.body) {
                 .binding => {
-                    _ = try self.analyzeBinding(&statement.body.binding);
+                    _ = try sema.scoped(&module.scope).analyzeBinding(&statement.body.binding);
                 }
             }
         }
     }
 
-    fn analyzeBinding(self: Self, binding: *Sem.Binding) Error!Taip {
-        const body_scope = binding.decl.body_scope;
-        for (binding.where_clauses) |*where_clause| {
-            _ = try self.analyzeWhereClause(where_clause);
+    fn analyzeBinding(sema: Sema, binding: *Sem.Binding) Error!Meta {
+        const self = sema.meta(binding);
+        if (self.state != .complete) {
+            self.state = .complete;
+            for (binding.where_clauses) |*where_clause| {
+                _ = try sema.analyzeWhereClause(where_clause);
+            }
+            self.copyTypeAndValue(try sema.analyzeDecl(&binding.decl));
+            self.value_symbol = Symbol.init(binding);
         }
-        const taip = try self.analyzeDecl(body_scope.parent.?, &binding.decl);
-        try self.setTaip(binding, taip);
-        if (self.valueOf(&binding.decl)) |value| {
-            try self.setValue(binding, value);
-        }
-        return taip;
+        return self.*;
     }
 
-    fn analyzeWhereClause(self: Self, where_clause: *Sem.WhereClause) Error!Taip {
-        const taip = try self.analyzeDecl(where_clause.decl.body_scope.parent.?.parent.?, &where_clause.decl);
-        try self.setTaip(where_clause, taip);
-        if (self.valueOf(&where_clause.decl)) |value| {
-            try self.setValue(where_clause, value);
+    fn analyzeWhereClause(sema: Sema, where_clause: *Sem.WhereClause) Error!Meta {
+        const self = sema.meta(where_clause);
+        if (self.state != .complete) {
+            self.state = .complete;
+            self.copyTypeAndValue(try sema.analyzeDecl(&where_clause.decl));
+            self.value_symbol = Symbol.init(where_clause);
         }
-        return taip;
+        return self.*;
     }
 
-    fn analyzeDecl(self: Self, taip_scope: *Scope, decl: *Sem.Decl) Error!Taip {
-        const decl_taip: ?Taip = (
-            if (decl.taip_expr) |taip_expr| 
-                try self.analyzeTaipExpr(taip_scope, taip_expr)
-            else null
-        );
-        switch (decl.body) {
-            .function =>  {
-                const function = &decl.body.function;
-                for (function.params) |*param| {
-                    const taip = try self.analyzeTaipExpr(taip_scope, param.taip_expr);
-                    try self.setTaip(param, taip);
-                    param.taip = taip;
-                }
-                const expr_taip = try self.analyzeDeclBody(decl_taip, &decl.body_scope, function.body);
-                const return_taip = decl_taip orelse expr_taip;
-                function.return_taip = return_taip;
-                try self.setTaip(function, return_taip);
-                const function_taip = (try Taip.taipOfFunction(self.allocator(), function)).?;
-                try self.setTaip(decl, function_taip);
-                try self.setValue(decl, Value.init(function_taip, function));
-                return function_taip;
-            },
-            .direct => |direct| {
-                const expr_taip = try self.analyzeDeclBody(decl_taip, &decl.body_scope, direct);
-                const taip = decl_taip orelse expr_taip;
-                try self.setTaip(decl, taip);
-                if (self.valueOf(direct)) |value| {
-                    try self.setValue(decl, value);
-                }
-                return taip;
-            },
-        }
-    }
-
-    fn analyzeDeclBody(self: Self, expected_taip: ?Taip, scope: *Scope, expr: *Expr) Error!Taip {
-        const decl_node = @fieldParentPtr(Stx.Decl, "expr", expr);
-        const equal = decl_node.equal;
-        const expr_taip = try self.analyzeExpr(scope, expr);
-        if (expected_taip) |expected| {
-            try self.checkCoerceTaip(equal, expr_taip, expected);
-            if (self.valueOf(expr)) |value| {
-                const coerced = try self.coerceValue(equal, value, expected);
-                try self.setValue(expr, coerced);
+    fn analyzeDecl(sema: Sema, decl: *Sem.Decl) Error!Meta {
+        const sema_body = sema.scoped(decl);
+        const self = sema.meta(decl);
+        if (self.state != .complete) {
+            self.state = .complete;
+            const type_expr: Meta = (
+                if (decl.type_expr) |type_expr| 
+                    try sema.analyzeTypeExpr(type_expr)
+                else Meta{}
+            );
+            switch (decl.body) {
+                .function =>  {
+                    const function = &decl.body.function;
+                    for (function.params) |*fn_param| {
+                        const param = sema.meta(fn_param);
+                        const param_type_expr = try sema.analyzeTypeExpr(fn_param.type_expr);
+                        param.setTypeFromValue(param_type_expr);
+                    }
+                    _ = try sema_body.analyzeDeclBody(type_expr, function.body);
+                    const fn_type = comptime typeMeta(.function);
+                    self.setTypeFromValue(fn_type);
+                    self.value_data = Value.Data { .function = function };
+                },
+                .direct => |direct| {
+                    const body = try sema_body.analyzeDeclBody(type_expr, direct);
+                    self.copyTypeAndValue(body);
+                },
             }
         }
-        return expr_taip;
+        return self.*;
     }
 
-    fn analyzeTaipExpr(self: Self, scope: *Scope, expr: *Expr) Error!Taip {
-        const taip_expr = @fieldParentPtr(Stx.TypeExpr, "expr", expr);
-        const colon = taip_expr.colon;
-        const expr_taip = try self.analyzeExpr(scope, expr);
-        if (expr_taip != .taip) {
-            self.unit.diagnostics.logError(colon.text, "expected type, found {}", .{expr_taip});
-            return Error.Unresolved;
-        }
-        else {
-            if (self.sem.valueOf(expr)) |value| {
-                return value.data.taip;
-            }
-            else {
-                self.unit.diagnostics.logError(colon.text, "could not resolve type expression", .{});
+    fn analyzeDeclBody(sema: Sema, type_expr: Meta, body_expr: *Expr) Error!Meta {
+        const equal = @fieldParentPtr(Stx.Decl, "expr", body_expr).equal;
+        var expr = try sema.expectingType(type_expr).analyzeExpr(body_expr);
+        try sema.cast(.coerce, equal, &expr, type_expr);
+        return expr;
+    }
+
+    fn analyzeTypeExpr(sema: Sema, type_expr: *Expr) Error!Meta {
+        const colon = @fieldParentPtr(Stx.TypeExpr, "expr", type_expr).colon;        
+        const expr = try sema.analyzeExpr(type_expr);
+        if (expr.ktype) |expr_type| {
+            if (expr_type != .ktype) {
+                sema.logError(colon, "expected type, found {}", .{expr_type});
                 return Error.Unresolved;
             }
         }
+        return expr;
     }
 
 
-    fn analyzeExpr(self: Self, scope: *Scope, expr: anytype) Error!Taip {
+    fn analyzeExpr(sema: Sema, expr: anytype) Error!Meta {
         const Node = @TypeOf(expr);
-        if (self.taipOf(expr)) |taip| {
-            return taip;
-        }
-        const expr_taip: Taip = et: {
+        const self = sema.meta(expr);
+        if (self.state != .complete) {
             switch (Node) {
                 *Expr => { 
-                    const taip = try self.analyzeExpr(scope, &expr.expr);
-                    if (self.valueOf(&expr.expr)) |value| {
-                        try self.setValue(expr, value);
-                    }
-                    break :et taip;
+                    self.copyTypeAndValue(try sema.analyzeExpr(&expr.expr));
                 },
                 *Expr.Add, *Expr.Mul => {
-                    var taip = try self.analyzeExpr(scope, &expr.operand);
-                    var value: ?Value = self.valueOf(&expr.operand);
+                    var lhs = try sema.analyzeExpr(&expr.operand);
                     if (expr.terms) |terms| {
-                        for (terms) |*term| {
-                            const rhs_taip = try self.analyzeExpr(scope, &term.operand);
-                            // _ = rhs_taip;
-                            taip = try self.binaryResultTaip(term.op, taip, rhs_taip);
-                            try self.setTaip(term, taip);
-                            if (value) |lhs_value| {
-                                if (self.valueOf(&term.operand)) |rhs_value| {
-                                    const result = try self.doBinaryOp(term.op, lhs_value, rhs_value);
-                                    try self.setValue(term, result);
-                                    value = result;
-                                }
-                            }
+                        for (terms) |*term_expr| {
+                            const term = sema.meta(term_expr);
+                            const rhs = try sema.analyzeExpr(&term_expr.operand);
+                            try sema.binaryOperation(term_expr.op, lhs, rhs, term);
+                            lhs = term.*;
                         }
                     }
-                    if (value) |v| {
-                        try self.setValue(expr, v);
-                    }
-                    break :et taip;
+                    self.copyTypeAndValue(lhs);
                 },
                 *Expr.Neg => {
-                    const operand_taip = try self.analyzeExpr(scope, &expr.operand);
+                    self.copyTypeAndValue(try sema.analyzeExpr(&expr.operand));
                     if (expr.op) |op| {
-                        if (self.valueOf(&expr.operand)) |operand_value| {
-                            if (op.tag == .minus) {
-                                if (!operand_taip.isNumeric()) {
-                                    // this will always fail because the negate (.minus) operator 
-                                    // is only for numeric types
-                                    // return the correct error and log the right diagnostic
-                                    _ = try self.unaryResultTaip(op, operand_taip);
-                                }
-                                if (operand_taip.numericScalar() == .unsigned) {
-                                    const signed_value = try self.coerceValue(op, operand_value, Taip.init(.signed));
-                                    const result_value = try self.doUnaryOp(op, signed_value);
-                                    const result_taip = result_value.taip;
-                                    // if we are negating a number literal directly, set its type and value
-                                    // this is literally just so that it shows up as signed and negative on diagnostics lol
-                                    if (expr.operand.function.container == .number) {
-                                        try self.setTaip(&expr.operand, result_taip);
-                                        try self.setValue(&expr.operand, result_value);
-                                        try self.setTaip(&expr.operand.function, result_taip);
-                                        try self.setValue(&expr.operand.function, result_value);
-                                        try self.setTaip(&expr.operand.function.container, result_taip);
-                                        try self.setValue(&expr.operand.function.container, result_value);
-                                    }
-                                    try self.setValue(expr, result_value);
-                                    break :et result_taip;
+                        if (op.tag == .minus) {
+                            if (self.value()) |value| {
+                                const ktype = value.ktype;
+                                if (ktype.isNumeric() and ktype.scalar == .unsigned) {
+                                    // if the operand is unsigned but has a known value at compile time,
+                                    // it can coerce to signed before negation
+                                    try sema.cast(.coerce, op, self, typeMeta(.signed));
                                 }
                             }
-                            try self.setValue(expr, try self.doUnaryOp(op, operand_value));
+                            const operand = self.*;
+                            try sema.unaryOperation(op, operand, self);
+                            // if we are negating a number literal directly, set its type and value
+                            // this is literally just so that it shows up as signed and negative on diagnostics lol
+                            if (expr.operand.function.container == .number) {
+                                sema.meta(&expr.operand).copyTypeAndValue(self.*);
+                                sema.meta(&expr.operand.function).copyTypeAndValue(self.*);
+                                sema.meta(&expr.operand.function.container).copyTypeAndValue(self.*);
+                            }
                         }
-                        const result_taip = try self.unaryResultTaip(op, operand_taip);
-                        break :et result_taip;
-                    }
-                    else {
-                        if (self.valueOf(&expr.operand)) |value| {
-                            try self.setValue(expr, value);
-                        }
-                        break :et operand_taip;
                     }
                 },
                 *Expr.Eval => {
-                    const taip = try self.analyzeExpr(scope, &expr.function);
-                    if (self.valueOf(&expr.function)) |value| {
-                        try self.setValue(expr, value);
-                    }
-                    break :et taip;
+                    self.copyTypeAndValue(try sema.analyzeExpr(&expr.function));
                     // if (expr.params) |params| {
                     //     for (params.params) |*param| {
-                    //         try self.analyzeExpr(scope, param);
+                    //         try self.analyzeExpr(param);
                     //     }
                     // }
                 },
-                *Expr.Access => {
-                    const container_taip = try self.analyzeExpr(scope, &expr.container);
-                    if (expr.member) |member| {
-                        if (container_taip == .module) {
-                            if (self.valueOf(&expr.container)) |container| {
-                                const module = container.data.module;
-                                if (module.scope.findSymbol(member.name)) |member_symbol| {
-                                    try self.setDepInfo(expr, .{
-                                        .route_id = 0,
-                                        .symbol = member_symbol,
-                                    });
-                                    const member_taip = try self.analyzeSymbol(member_symbol);
-                                    if (self.valueOfSymbol(member_symbol)) |value| {
-                                        try self.setValue(expr, value);
-                                    }
-                                    break :et member_taip;
+                *Expr.Access => blk: {
+                    const con = try sema.analyzeExpr(&expr.container);
+                    if (expr.member) |member_expr| {
+                        if (con.ktype) |con_type| {
+                            if (con_type != .module) {
+                                sema.logError(
+                                    member_expr.dot,
+                                    "{} does not support member access",
+                                    .{con_type},
+                                );
+                                return Error.Unresolved;
+                            }
+                            if (con.value()) |value| {
+                                const module = value.data.module;
+                                if (module.scope.findSymbol(member_expr.name)) |member_symbol| {
+                                    const member = try sema.analyzeSymbol(member_symbol);
+                                    self.copyTypeAndValue(member);
+                                    break :blk;
                                 }
                                 else {
-                                    self.unit.diagnostics.logError(
-                                        member.name.text,
-                                        "module has no member '{s}'",
-                                        .{member.name.text},
+                                    sema.logError(
+                                        member_expr.name,
+                                        "module {} missing member '{s}'",
+                                        .{module, member_expr.name.text},
                                     );
                                     return Error.Unresolved;
                                 }
                             }
-                            else {
-                                self.unit.diagnostics.logError(
-                                    member.dot.text,
-                                    "could not resolve container value",
-                                    .{}
-                                );
-                                return Error.Unresolved;
-                            }
-                        }
-                        else {
-                            self.unit.diagnostics.logError(
-                                member.dot.text,
-                                "{} does not support member access",
-                                .{container_taip},
-                            );
-                            return Error.Unresolved;
                         }
                     }
-                    else {
-                        if (self.valueOf(&expr.container)) |value| {
-                            try self.setValue(expr, value);
-                        }
-                        break :et container_taip;
-                    }
+                    self.copyTypeAndValue(con);
                 },
                 *Expr.Atom => switch (expr.*) {
                     .number => |number| {
                         const value: Value = blk: {
-                            if (std.fmt.parseUnsigned(Taip.TypeOf(.unsigned), number.text, 10)) |unsigned| {
+                            if (std.fmt.parseUnsigned(KType.TypeOf(.unsigned), number.text, 10)) |unsigned| {
                                 break :blk Value.initConstScalar(.unsigned, unsigned);
                             }
-                            else |_| if (std.fmt.parseFloat(Taip.TypeOf(.float), number.text)) |float| {
+                            else |_| if (std.fmt.parseFloat(KType.TypeOf(.float), number.text)) |float| {
                                 break :blk Value.initConstScalar(.float, float);
                             }
                             else |_| unreachable;
                         };
-                        try self.setValue(expr, value);
-                        break :et value.taip;
+                        const type_constant = language.lookupConstant(@tagName(value.ktype.scalar)).?;
+                        self.value_data = value.data;
+                        self.ktype = value.ktype;
+                        self.ktype_symbol = Symbol.init(type_constant);
                     },
                     .name => |name| {
-                        if (scope.findSymbol(name)) |symbol| {
-                            try self.setDepInfo(expr, .{
-                                .route_id = 0,
-                                .symbol = symbol,
-                            });
-                            const taip = try self.analyzeSymbol(symbol);
-                            if (self.valueOfSymbol(symbol)) |value| {
-                                try self.setValue(expr, value);
-                            }
-                            break :et taip;
+                        if (sema.scope.findSymbol(name)) |symbol| {
+                            self.copyTypeAndValue(try sema.analyzeSymbol(symbol));
                         }
                         else {
-                            self.unit.diagnostics.logError(name.text, "use of undeclared symbol '{s}'", .{name.text});
+                            sema.logError(name, "use of undeclared symbol '{s}'", .{name.text});
                             return Error.Unresolved;
                         }
                     },
                     .module => {
-                        const module = self.valueOf(expr).?.data.module;
-                        try self.analyzeModule(module);
-                        break :et Taip.init(.module);
+                        if (self.value_data) |data| {
+                            const module = data.module;
+                            try sema.analyzeModule(module);
+                        }
                     },
                     .parens => |parens| {
-                        const taip = try self.analyzeExpr(scope, parens.expr);
-                        if (self.valueOf(parens.expr)) |value| {
-                            try self.setValue(expr, value);
-                        }
-                        break :et taip;
+                        self.copyTypeAndValue(try sema.analyzeExpr(parens.expr));
                     },
                     .import => {
-                        break :et Taip.init(.module);
+                        const type_constant = language.lookupConstant(@tagName(KType.Tag.module)).?;
+                        self.ktype = type_constant.value.data.ktype;
+                        self.ktype_symbol = Symbol.init(type_constant);
                     },
                 },
                 else => @compileError(@typeName(Node) ++ " is not an expression node"),
             }
-        };
-        try self.setTaip(expr, expr_taip);
-        return expr_taip;
-
+        }
+        self.state = .complete;
+        return self.*;
     }
 
-    fn analyzeSymbol(self: Self, symbol: Symbol) Error!Taip {
+    
+    const type_type = KType.init(.ktype);
+
+    fn typeMeta(comptime type_value: anytype) Meta {
+        comptime {
+            const tv = KType.init(type_value);
+            return analyzeTypeValue(&tv);
+        }
+    }
+
+    fn analyzeTypeValue(type_value: *const KType) Meta {
+        return Meta {
+            .ktype = type_type,
+            .ktype_symbol = Symbol.init(&type_type),
+            .value_data = Value.Data{ .ktype = type_value.* },
+            .value_symbol = Symbol.init(type_value),
+        };
+    }
+
+    fn analyzeSymbol(sema: Sema, symbol: Symbol) Error!Meta {
         switch (symbol) {
             .binding => |binding| {
-                return try self.analyzeBinding(binding);
+                return try sema.analyzeBinding(binding);
             },
             .where_clause => |where_clause| {
-                return try self.analyzeWhereClause(where_clause);
+                return try sema.analyzeWhereClause(where_clause);
             },
             .function_param => |function_param| {
-                return function_param.taip.?;
+                return sema.data.get(function_param);
             },
-            .constant => |constant| return constant.taip,
+            .constant => |constant| return Meta {
+                .ktype = constant.ktype,
+                .ktype_symbol = Symbol.init(&constant.ktype),
+                .value_data = constant.value.data,
+                .value_symbol = symbol,
+            },
+            .literal => |literal| return try sema.analyzeExpr(literal),
+            .type_value => |type_value| return analyzeTypeValue(type_value),
         }
     }
 
-    fn valueOfSymbol(self: Self, symbol: Symbol) ?Value {
-        switch (symbol) {
-            .binding => |binding| return self.valueOf(binding),
-            .where_clause => |where_clause| return self.valueOf(where_clause),
-            .function_param => |function_param| return self.valueOf(function_param),
-            .constant => |constant| return constant.value,
-        }
-    }
 
-    fn tryAddSymbol(self: Self, scope: *Scope, symbol_item: anytype) AllocError!?Symbol {
+    fn tryAddSymbol(sema: Sema, symbol_item: anytype) AllocError!?Symbol {
         const symbol = Symbol.init(symbol_item);
-        if (try scope.tryAddSymbol(symbol)) |existing| {
-            _ = self.unit.diagnostics.startError(
+        try sema.initMeta(symbol_item);
+        if (try sema.scope.tryAddSymbol(symbol)) |existing| {
+            _ = sema.unit.diagnostics.startError(
                 symbol.name(),
                 "{k} shadows existing {kn}",
                 .{symbol, existing},
@@ -519,35 +487,45 @@ const Analyzer = struct {
             return existing;
         }
         else {
+            const symbol_meta = sema.meta(symbol_item);
+            symbol_meta.value_symbol = symbol;
             return null;
         }
     }
+
     const CoerceError = language.CoerceError;
     const CastError = language.CastError;
 
-    const CastTaipError = language.CastTaipError;
-    const CoerceTaipError = language.CoerceTaipError;
+    const CastKTypeError = language.CastKTypeError;
+    const CoerceKTypeError = language.CoerceKTypeError;
     const CastValueError = language.CastValueError;
     const CoerceValueError = language.CoerceValueError;
 
 
     const OpError = BinaryOpError || UnaryOpError;
 
-    const ResultTaipError = language.ResultTaipError;
+    const ResultKTypeError = language.ResultKTypeError;
 
     const BinaryOpError = language.BinaryOpError;
-    const BinaryOpTaipError = language.BinaryOpTaipError;
+    const BinaryOpKTypeError = language.BinaryOpKTypeError;
     const BinaryOpValueError = language.BinaryOpValueError;
     const UnaryOpError = language.UnaryOpError;
-    const UnaryOpTaipError = language.UnaryOpTaipError;
+    const UnaryOpKTypeError = language.UnaryOpKTypeError;
     const UnaryOpValueError = language.UnaryOpValueError;
 
 
     const CastMode = enum {
         cast, coerce,
+
+        fn ErrorSet(comptime mode: CastMode) type {
+            return switch (mode) {
+                .cast => CastError,
+                .coerce => CoerceError,
+            };
+        }
     };
 
-    fn logCastOrCoerceError(self: Self, token: anytype, comptime mode: CastMode, err: anytype, a_taip: Taip, a_value: ?Value, b_taip: Taip) @TypeOf(err)!void {
+    fn logCastError(self: Sema, comptime mode: CastMode, token: anytype, err: anytype, a_ktype: KType, a_value: ?Value, b_ktype: KType) @TypeOf(err)!void {
         const ErrSet = switch (mode) {
             .cast => CastError,
             .coerce => CoerceError,
@@ -555,31 +533,31 @@ const Analyzer = struct {
         switch(@errSetCast(ErrSet, err)) {
             ErrSet.Incompatable => self.logError(token, 
                 "cannot " ++ @tagName(mode) ++ " {} to {}",
-                .{a_taip, b_taip}),
+                .{a_ktype, b_ktype}),
             ErrSet.DimensionMismatch => self.logError(token, 
                 "cannot " ++ @tagName(mode) ++ " {} to {} with different dimensions",
-                .{a_taip, b_taip}),
+                .{a_ktype, b_ktype}),
             ErrSet.IntegerOverflow => self.logError(token, 
                 "failed to " ++ @tagName(mode) ++ " {} {} to {} without overflow",
-                .{a_taip, a_value.?, b_taip}),
+                .{a_ktype, a_value.?, b_ktype}),
             ErrSet.NegativeToUnsigned => self.logError(token, 
                 "failed to " ++ @tagName(mode) ++ " negative {} {} to {}",
-                .{a_taip, a_value.?, b_taip}),
+                .{a_ktype, a_value.?, b_ktype}),
             ErrSet.NanToInteger => self.logError(token, 
                 "failed to " ++ @tagName(mode) ++ " {} {} to {}",
-                .{a_taip, a_value.?, b_taip}),
+                .{a_ktype, a_value.?, b_ktype}),
             ErrSet.InfinityToInteger => self.logError(token, 
                 "failed to " ++ @tagName(mode) ++ " {} {} to {}",
-                .{a_taip, a_value.?, b_taip}),
+                .{a_ktype, a_value.?, b_ktype}),
             else => switch (mode) {
                 .cast => return,
                 .coerce => switch (@errSetCast(ErrSet, err)) {
                     ErrSet.ScalarModeMismatch => self.logError(token, 
                         "cannot coerce {} to {} without a cast",
-                        .{a_taip, b_taip}),
+                        .{a_ktype, b_ktype}),
                     ErrSet.ScalarInformationLoss => self.logError(token, 
                         "cannot coerce {} to {} without a cast",
-                        .{a_taip, b_taip}),
+                        .{a_ktype, b_ktype}),
                     else => return,
                 }
             }
@@ -587,23 +565,23 @@ const Analyzer = struct {
         return err;
     }
 
-    fn logBinaryOpError(self: Self, err: anytype, op: Token, a_taip: Taip, b_taip: Taip, a_value: ?Value, b_value: ?Value) @TypeOf(err)!void {
+    fn logBinaryOpError(self: Sema, err: anytype, op: Token, a_ktype: KType, b_ktype: KType, a_value: ?Value, b_value: ?Value) Error!void {
         switch (@errSetCast(BinaryOpError, err)) {
             BinaryOpError.DivideByZero => self.logError(op,
                 "divide by zero {} {s} {}",
                 .{a_value.?, op.text, b_value.?}),
             BinaryOpError.UnsupportedOperation => self.logError(op,
                 "undefined operation {} {s} {}",
-                .{a_taip, op.text, b_taip}),
+                .{a_ktype, op.text, b_ktype}),
             else => switch (op.tag) {
                 .plus, .minus, .aster, .fslash => {
-                    if (language.binaryResultTaip(op.tag, a_taip, b_taip)) |result_taip| {
-                        if (result_taip.eql(a_taip)) return self.logCastOrCoerceError(op, .coerce, err, a_taip, a_value, b_taip);
-                        if (result_taip.eql(b_taip)) return self.logCastOrCoerceError(op, .coerce, err, b_taip, b_value, a_taip);
+                    if (language.binaryResultKType(op.tag, a_ktype, b_ktype)) |result_ktype| {
+                        if (result_ktype.eql(a_ktype)) return self.logCastError(.coerce, op, err, a_ktype, a_value, b_ktype);
+                        if (result_ktype.eql(b_ktype)) return self.logCastError(.coerce, op, err, b_ktype, b_value, a_ktype);
                     }
                     else |_| {
-                        try self.checkCoerceTaip(op, a_taip, b_taip);
-                        try self.checkCoerceTaip(op, b_taip, a_taip);
+                        try self.checkCastType(.coerce, op, a_ktype, b_ktype);
+                        try self.checkCastType(.coerce, op, b_ktype, a_ktype);
                     }
                 },
                 else => return,
@@ -612,18 +590,18 @@ const Analyzer = struct {
         return err;
     }
 
-    fn logUnaryOpError(self: Self, err: anytype, op: Token, a_taip: Taip, a_value: ?Value) @TypeOf(err)!void {
+    fn logUnaryOpError(self: Sema, err: anytype, op: Token, a_ktype: KType, a_value: ?Value) Error!void {
         switch (@errSetCast(UnaryOpError, err)) {
             UnaryOpError.NegateUnsigned => self.logError(op,
                 "cannot negate {}",
-                .{a_taip}),
+                .{a_ktype}),
             UnaryOpError.UnsupportedOperation => self.logError(op,
                 "undefined operation {s} {}",
-                .{op.text, a_taip}),
+                .{op.text, a_ktype}),
             else => switch (op.tag) {
                 .plus, .minus => {
-                    if (language.unaryResultTaip(op.tag, a_taip)) |result_taip| {
-                        try self.logCastOrCoerceError(op, .coerce, err, a_taip, a_value.?, result_taip);
+                    if (language.unaryResultKType(op.tag, a_ktype)) |result_ktype| {
+                        try self.logCastError(.coerce, op, err, a_ktype, a_value.?, result_ktype);
                     }
                     else |_| {
                         return;
@@ -635,112 +613,85 @@ const Analyzer = struct {
         return err;
     }
 
-
-    fn checkCastTaip(self: Self, token: anytype, a: Taip, b: Taip) CastTaipError!void {
-        errdefer |err| self.logCastOrCoerceError(token, .coerce, err, a, null, b) catch {};
-        try language.checkCastTaip(a, b);
-    }
-
-    fn checkCoerceTaip(self: Self, token: anytype, a: Taip, b: Taip) CoerceTaipError!void {
-        errdefer |err| self.logCastOrCoerceError(token, .coerce, err, a, null, b) catch {};
-        try language.checkCoerceTaip(a, b);
-    }
-
-    fn castValue(self: Self, token: anytype, a: Value, b: Taip) CastError!Value {
-        if (a.taip.eql(b)) {
-            return a;
+    /// if target has a known value, it MUST be a KType. this is not checked
+    fn cast(sema: Sema, comptime mode: CastMode, token: anytype, self: *Meta, target: Meta) Error!void {
+        if (self.ktype) |self_type| {
+            if (target.value_data) |target_data| {
+                const target_type = target_data.ktype;
+                try sema.checkCastType(mode, token, self_type, target_type);
+                self.ktype_symbol = target.value_symbol;
+                if (self.value())  |self_value| {
+                    const result = try sema.castValueAssumeSafe(mode, token, self_value, target_type);
+                    self.ktype = target_type;
+                    self.value_data = result.data;
+                }
+            }
         }
-        try self.checkCastTaip(token, a.taip, b);
-        return try self.coerceOrCastValueAssumeSafe(token, .cast, a, b);
     }
 
-    fn coerceValue(self: Self, token: anytype, a: Value, b: Taip) CoerceError!Value {
-        if (a.taip.eql(b)) {
-            return a;
+
+    fn checkCastType(sema: Sema, comptime mode: CastMode, token: anytype, a: KType, b: KType) Error!void {
+        errdefer |err| sema.logCastError(mode, token, err, a, null, b) catch {};
+        switch (mode) {
+            .cast => try language.checkCastKType(a, b),
+            .coerce => try language.checkCoerceKType(a, b),
         }
-        try self.checkCoerceTaip(token, a.taip, b);
-        return try self.coerceOrCastValueAssumeSafe(token, .coerce, a, b);        
     }
 
-    fn coerceOrCastValueAssumeSafe(self: Self, token: anytype, comptime mode: CastMode, a: Value, b: Taip) CastValueError!Value {
-        errdefer |err| self.logCastOrCoerceError(token, mode, err, a.taip, a, b) catch {};
+    fn castValue(sema: Sema, comptime mode: CastMode, token: anytype, a: Value, b: KType) Error!Value {
+        if (a.ktype.eql(b)) return a;
+        try sema.checkCastType(mode, token, a.ktype, b);
+        return try sema.castValueAssumeSafe(mode, token, a, b);
+    }
+
+    fn castValueAssumeSafe(sema: Sema, comptime mode: CastMode, token: anytype, a: Value, b: KType) Error!Value {
+        errdefer |err| sema.logCastError(mode, token, err, a.ktype, a, b) catch {};
         return try language.castValueAssumeSafe(a, b);
     }
 
-    fn binaryResultTaip(self: Self, op: Token, a: Taip, b: Taip) BinaryOpTaipError!Taip {
-        errdefer |err| self.logBinaryOpError(err, op, a, b, null, null) catch {};
-        return try language.binaryResultTaip(op.tag, a, b);
-    }
-
-    fn unaryResultTaip(self: Self, op: Token, a: Taip) UnaryOpTaipError!Taip {
-        errdefer |err| self.logUnaryOpError(err, op, a, null) catch {};
-        return try language.unaryResultTaip(op.tag, a);
-    }
-
-
-    fn doBinaryOp(self: Self, op: Token, a: Value, b: Value) BinaryOpError!Value {
-        const res = try self.binaryResultTaip(op, a.taip, b.taip);
-        const av = try self.coerceValue(op, a, res);
-        const bv = try self.coerceValue(op, b, res);
-        errdefer |err| self.logBinaryOpError(err, op, a.taip, b.taip, a, b) catch {};
-        return try language.doBinaryOpAssumeSafe(op.tag, res, av, bv);
-    }
-
-    fn doUnaryOp(self: Self, op: Token, a: Value) UnaryOpError!Value {
-        const res = try self.unaryResultTaip(op, a.taip);
-        const av = try self.coerceValue(op, a, res);
-        errdefer |err| self.logUnaryOpError(err, op, a.taip, a) catch {};
-        return try language.doUnaryOpAssumeSafe(op.tag, res, av);
-    }
-
-
-    fn meta(self: Self, node: anytype) AllocError!?*Sem.Metadata {
-        if (metaSlice(node)) |slice| {
-            if (self.sem.meta_map.getOrPut(self.allocator(), @ptrToInt(slice.ptr))) |kv| {
-                const m = kv.value_ptr;
-                if (!kv.found_existing) {
-                    m.* = Sem.Metadata {
-                        .slice = slice,
-                        .taip = undefined,
-                        .value = null,
-                    };
+    fn binaryOperation(sema: Sema, op: Token, lhs: Meta, rhs: Meta, res: *Meta) Error!void {
+        if (lhs.ktype) |l_type| {
+            if (rhs.ktype) |r_type| {
+                const res_type = try sema.binaryResultType(op, l_type, r_type);
+                res.ktype = res_type;
+                if (res_type.eql(l_type)) res.ktype_symbol = lhs.ktype_symbol;
+                if (res_type.eql(r_type)) res.ktype_symbol = rhs.ktype_symbol;
+                if (lhs.value()) |l_val| {
+                    if (rhs.value()) |r_val| {
+                        const l_coerced = try sema.castValue(.coerce, op, l_val, res_type);
+                        const r_coerced = try sema.castValue(.coerce, op, r_val, res_type);
+                        errdefer |err| sema.logBinaryOpError(err, op, l_type, r_type, l_val, r_val) catch {};
+                        const res_val = try language.doBinaryOpAssumeSafe(op.tag, res_type, l_coerced, r_coerced);
+                        res.value_data = res_val.data;
+                    }
                 }
-                return m;
             }
-            else |_| {
-                return AllocError.OutOfMemory;
-            }
-        }
-        else {
-            return null;
         }
     }
 
-    fn metaSlice(node: anytype) ?[]const u8 {
-        const Node = @TypeOf(node);
-        return switch (Node) {
-            *Sem.Binding => node.decl.name,
-            *Sem.WhereClause => node.decl.name,
-            *Sem.Function.Param => node.name,
-            *Expr.Add.Term => node.op.text,
-            *Expr.Mul.Term => node.op.text,
-            *Expr.Neg => (
-                if (node.op) |op| op.text
-                else null
-            ),
-            *Expr.Access => (
-                if (node.member) |member| member.name.text
-                else null
-            ),
-            *Expr.Atom => switch (node.*) {
-                .number => node.number.text,
-                .name => node.name.text,
-                .module => node.module.kw_module.text,
-                .import => node.import.kw_import.text,
-                else => null,
-            },
-            else => null,
-        };
+    fn unaryOperation(sema: Sema, op: Token, operand: Meta, res: *Meta) Error!void {
+        if (operand.ktype) |operand_type| {
+            const res_type = try sema.unaryResultType(op, operand_type);
+            res.ktype = res_type;
+            if (operand.value()) |operand_val| {
+                const operand_coerced = try sema.castValue(.coerce, op, operand_val, res_type);
+                errdefer |err| sema.logUnaryOpError(err, op, operand_type, operand_val) catch {};
+                const res_val = try language.doUnaryOpAssumeSafe(op.tag, res_type, operand_coerced);
+                res.value_data = res_val.data;
+            }
+        }
     }
+
+    fn binaryResultType(sema: Sema, op: Token, a: KType, b: KType) BinaryOpKTypeError!KType {
+        errdefer |err| sema.logBinaryOpError(err, op, a, b, null, null) catch {};
+        return try language.binaryResultKType(op.tag, a, b);
+    }
+
+    fn unaryResultType(self: Sema, op: Token, a: KType) UnaryOpKTypeError!KType {
+        errdefer |err| self.logUnaryOpError(err, op, a, null) catch {};
+        return try language.unaryResultKType(op.tag, a);
+    }
+
+    
 
 };
