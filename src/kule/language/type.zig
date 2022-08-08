@@ -8,22 +8,7 @@ const meta = std.meta;
 const Semantics = language.Semantics;
 
 const Module = Semantics.Module;
-const Function = Semantics.Function;
 
-pub const ktypes = struct {
-    pub const ktype: KType = .ktype;
-    pub const module: KType = .module;
-    pub fn function(allocator: Allocator, param_ktypes: []KType, return_ktype: KType) Allocator.Error!KType {
-        const func = try allocator.create(KType.Func);
-        func.* = KType.Func {
-            .param_ktypes = param_ktypes,
-            .return_ktype = return_ktype,
-        };
-        return KType {
-            .function = func,
-        };
-    }
-};
 
 pub const KType = union(enum) {
     
@@ -35,30 +20,29 @@ pub const KType = union(enum) {
     vector: Vector,
     matrix: Matrix,
 
-    // function: *Func,
-    function: void,
+    function: *Function,
 
     pub const Tag = meta.Tag(KType);
 
     pub const Scalar = ScalarKType;
     pub const Vector = VectorKType;
     pub const Matrix = MatrixKType;
-    pub const Func = FuncKType;
+    pub const Function = FuncKType;
     pub const DimCount = KTypeDimCount;
 
     pub fn init(value: anytype) KType {
         const V = @TypeOf(value);
         switch (V) {
+            KType => return value,
             Scalar => return KType{ .scalar = value },
             Vector => return KType{ .vector = value },
             Matrix => return KType{ .matrix = value },
-            *Func => return KType{ .function = value },
+            *Function => return KType{ .function = value },
             else => {
                 if (comptime meta.trait.is(.EnumLiteral)(V)) {
                     switch (value) {
                         .ktype => return .ktype,
                         .module => return .module,
-                        .function => return .function,
                         .float => return init(Scalar.float),
                         .signed => return init(Scalar.signed),
                         .unsigned => return init(Scalar.unsigned),
@@ -66,7 +50,7 @@ pub const KType = union(enum) {
                     }
                 }
                 else {
-                    @compileError(@typeName(value) ++ " is not a valid KType value");
+                    @compileError(@typeName(V) ++ " is not a valid KType value");
                 }
             }
         }
@@ -87,27 +71,6 @@ pub const KType = union(enum) {
         return field.Type();
     }
 
-    // pub fn ktypeOfFunction(allocator: Allocator, function: *Function) !?KType {
-    //     const params = function.params;
-    //     const param_ktypes = try allocator.alloc(KType, params.len);
-    //     for (params) |param, i| {
-    //         if (param.ktype) |param_ktype| {
-    //             param_ktypes[i] = param_ktype;
-    //         }
-    //         else {
-    //             allocator.free(param_ktypes);
-    //             return null;
-    //         }
-    //     }
-    //     if (function.return_ktype) |return_ktype| {
-    //         return try ktypes.function(allocator, param_ktypes, return_ktype);
-    //     }
-    //     else {
-    //         allocator.free(param_ktypes);
-    //         return null;
-    //     }
-    // }
-
     pub fn eql(a: KType, b: KType) bool {
         return meta.activeTag(a) == meta.activeTag(b) and switch(a) {
             .scalar => (
@@ -122,15 +85,15 @@ pub const KType = union(enum) {
                 and a.matrix.row_count == b.matrix.row_count
                 and a.matrix.col_count == b.matrix.col_count
             ),
-            // .function => (
-            //     a.function.return_ktype.eql(b.function.return_ktype)
-            //     and for (a.function.param_ktypes) |param_ktype, i| {
-            //         if (!param_ktype.eql(b.function.param_ktypes[i])) {
-            //             break false;
-            //         }
-            //     }
-            //     else true
-            // ),
+            .function => (
+                a.function.return_ktype.eql(b.function.return_ktype)
+                and for (a.function.param_ktypes) |param_ktype, i| {
+                    if (!param_ktype.eql(b.function.param_ktypes[i])) {
+                        break false;
+                    }
+                }
+                else true
+            ),
             else => true,
         };
     }
@@ -175,15 +138,14 @@ pub const KType = union(enum) {
         };
     }
 
-    pub fn format(self: KType, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void {
+    pub fn format(self: KType, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void {
         switch (self) {
             .ktype => try writer.writeAll("type"),
             .module => try writer.writeAll("module"),
-            .function => try writer.writeAll("function"),
             .scalar => |scalar| try scalar.format(writer),
             .vector => |vector| try vector.format(writer),
             .matrix => |matrix| try matrix.format(writer),
-            // .function => |function| try function.format(writer),
+            .function => |function| try function.format(writer, fmt),
         }
     }
 
@@ -203,8 +165,11 @@ const FuncKType = struct {
         };
     }
 
-    fn format(f: FuncKType, writer: anytype) @TypeOf(writer).Error!void {
-        try writer.writeAll("fn(");
+    fn format(f: FuncKType, writer: anytype, comptime fmt: []const u8 ) @TypeOf(writer).Error!void {
+        if (fmt.len == 0 or fmt[0] != '~') {
+            try writer.writeAll("fn");
+        }
+        try writer.writeAll("(");
         for (f.param_ktypes) |ktype, i| {
             if (i > 0) {
                 try writer.writeAll(", ");

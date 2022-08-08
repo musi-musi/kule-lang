@@ -64,6 +64,7 @@ const Sema = struct {
     const Error = error {
         Unresolved,
         TypeMismatch,
+        ParameterCountMismatch,
     } || AllocError || CastError || CoerceError || OpError;
 
 
@@ -148,6 +149,7 @@ const Sema = struct {
 
     fn collectDeclSymbols(sema: Sema, decl: *Sem.Decl) AllocError!void {
         const body_scope = &decl.body_scope;
+        const sema_body = sema.scoped(body_scope);
         try sema.initMeta(decl);
         if (decl.type_expr) |type_expr| {
             try sema.collectExprSymbols(type_expr);
@@ -156,13 +158,13 @@ const Sema = struct {
             .function => {
                 const function = &decl.body.function;
                 for (function.params) |*param| {
-                    _ = try body_scope.tryAddSymbol(param);
+                    _ = try sema_body.tryAddSymbol(param);
                     try sema.collectExprSymbols(param.type_expr);
                 }
-                try sema.scoped(body_scope).collectExprSymbols(function.body);
+                try sema_body.collectExprSymbols(function.body);
             },
             .direct => |expr| {
-                try sema.scoped(body_scope).collectExprSymbols(expr);
+                try sema_body.collectExprSymbols(expr);
             }
         }
     }
@@ -263,15 +265,24 @@ const Sema = struct {
             switch (decl.body) {
                 .function =>  {
                     const function = &decl.body.function;
-                    for (function.params) |*fn_param| {
+                    const fn_params = function.params;
+                    const param_types = try sema.allocator().alloc(KType, fn_params.len);
+                    errdefer sema.allocator().free(param_types);
+                    for (fn_params) |*fn_param, i| {
                         const param = sema.meta(fn_param);
-                        const param_type_expr = try sema.analyzeTypeExpr(fn_param.type_expr);
-                        param.setTypeFromValue(param_type_expr);
+                        const param_type = try sema.analyzeTypeExpr(fn_param.type_expr);
+                        param.setTypeFromValue(param_type);
+                        param_types[i] = param.ktype.?;
                     }
-                    _ = try sema_body.analyzeDeclBody(type_expr, function.body);
-                    const fn_type = Meta.initType(.function);
-                    self.setTypeFromValue(fn_type);
-                    self.value_data = Value.Data { .function = function };
+                    const body = try sema_body.analyzeDeclBody(type_expr, function.body);
+                    const return_type = body.ktype.?;
+                    const function_type = try sema.allocator().create(KType.Function);
+                    function_type.* = KType.Function {
+                        .param_ktypes = param_types,
+                        .return_ktype = return_type,
+                    };
+                    const value = Value.init(function_type, function);
+                    self.setValue(value);
                 },
                 .direct => |direct| {
                     const body = try sema_body.analyzeDeclBody(type_expr, direct);
@@ -285,20 +296,32 @@ const Sema = struct {
     fn analyzeDeclBody(sema: Sema, type_expr: Meta, body_expr: *Expr) Error!Meta {
         const equal = @fieldParentPtr(Stx.Decl, "expr", body_expr).equal;
         var expr = try sema.expectingType(type_expr).analyzeExpr(body_expr);
-        try sema.cast(.coerce, equal, &expr, type_expr);
-        return expr;
+        if (expr.ktype == null) {
+            sema.logError(equal, "could not resolve expression type", .{});
+            return Error.Unresolved;
+        }
+        else {
+            try sema.cast(.coerce, equal, &expr, type_expr);
+            return expr;
+        }
     }
 
     fn analyzeTypeExpr(sema: Sema, type_expr: *Expr) Error!Meta {
         const colon = @fieldParentPtr(Stx.TypeExpr, "expr", type_expr).colon;        
         const expr = try sema.analyzeExpr(type_expr);
-        if (expr.ktype) |expr_type| {
-            if (expr_type != .ktype) {
-                sema.logError(colon, "expected type, found {}", .{expr_type});
-                return Error.Unresolved;
+        if (expr.value()) |value| {
+            if (value.ktype != .ktype) {
+                sema.logError(colon, "expected type, found {}", .{value.ktype});
+                return Error.TypeMismatch;
+            }
+            else {
+                return expr;
             }
         }
-        return expr;
+        else {
+            sema.logError(colon, "could not resolve type expression", .{});
+            return Error.Unresolved;
+        }
     }
 
 
@@ -323,36 +346,61 @@ const Sema = struct {
                     self.copyTypeAndValue(lhs);
                 },
                 *Expr.Neg => {
-                    self.copyTypeAndValue(try sema.analyzeExpr(&expr.operand));
+                    var operand = try sema.analyzeExpr(&expr.operand);
                     if (expr.op) |op| {
                         if (op.tag == .minus) {
-                            if (self.value()) |value| {
+                            if (operand.value()) |value| {
                                 const ktype = value.ktype;
                                 if (ktype.isNumeric() and ktype.scalar == .unsigned) {
                                     // if the operand is unsigned but has a known value at compile time,
                                     // it can coerce to signed before negation
-                                    try sema.cast(.coerce, op, self, Meta.initType(.signed));
+                                    try sema.cast(.coerce, op, &operand, Meta.initType(.signed));
                                 }
                             }
-                            const operand = self.*;
-                            try sema.unaryOperation(op, operand, self);
+                            try sema.unaryOperation(op, operand, &operand);
                             // if we are negating a number literal directly, set its type and value
                             // this is literally just so that it shows up as signed and negative on diagnostics lol
                             if (expr.operand.function.container == .number) {
-                                sema.meta(&expr.operand).copyTypeAndValue(self.*);
-                                sema.meta(&expr.operand.function).copyTypeAndValue(self.*);
-                                sema.meta(&expr.operand.function.container).copyTypeAndValue(self.*);
+                                sema.meta(&expr.operand).copyTypeAndValue(operand);
+                                sema.meta(&expr.operand.function).copyTypeAndValue(operand);
+                                sema.meta(&expr.operand.function.container).copyTypeAndValue(operand);
                             }
                         }
                     }
+                    self.copyTypeAndValue(operand);
                 },
                 *Expr.Eval => {
-                    self.copyTypeAndValue(try sema.analyzeExpr(&expr.function));
-                    // if (expr.params) |params| {
-                    //     for (params.params) |*param| {
-                    //         try self.analyzeExpr(param);
-                    //     }
-                    // }
+                    const func = try sema.analyzeExpr(&expr.function);
+                    if (expr.params) |param_list| {
+                        if (func.value()) |value| {
+                            if (value.ktype == .function) {
+                                const ftype = value.ktype.function;
+                                // const function = value.data.function;
+                                const param_types = ftype.param_ktypes;
+                                const param_exprs = param_list.params;
+                                if (param_types.len != param_exprs.len) {
+                                    sema.logError(param_list.lparen, "expected {d} parameters, found {d}", .{param_types.len, param_exprs.len});
+                                    return Error.ParameterCountMismatch;
+                                }
+                                for (param_types) |param_type, i| {
+                                    var param_expr = try sema.expectingType(Meta.initType(param_type)).analyzeExpr(&param_exprs[i]);
+                                    try sema.checkCastType(.coerce, Expr.firstCharSlice(param_exprs[i]), param_expr.ktype.?, param_type);
+                                }
+                                self.ktype = ftype.return_ktype;
+                            }
+                            else {
+                                sema.logError(param_list.lparen, "{} does not support parameter evaluation", .{value.ktype});
+                                return Error.UnsupportedOperation;
+                            }
+                        }
+                        else {
+                            sema.logError(param_list.lparen, "could not resolve function", .{});
+                            return Error.Unresolved;
+                        }
+                    }
+                    else {
+                        self.copyTypeAndValue(func);
+                    }
                 },
                 *Expr.Access => blk: {
                     const con = try sema.analyzeExpr(&expr.container);
@@ -364,7 +412,7 @@ const Sema = struct {
                                     "{} does not support member access",
                                     .{con_type},
                                 );
-                                return Error.Unresolved;
+                                return Error.UnsupportedOperation;
                             }
                             if (con.value()) |value| {
                                 const module = value.data.module;
@@ -443,7 +491,7 @@ const Sema = struct {
                 return try sema.analyzeWhereClause(where_clause);
             },
             .function_param => |function_param| {
-                return sema.data.get(function_param);
+                return sema.meta(function_param).*;
             },
             .constant => |constant| return Meta {
                 .ktype = constant.ktype,
@@ -598,12 +646,12 @@ const Sema = struct {
             if (target.value_data) |target_data| {
                 const target_type = target_data.ktype;
                 try sema.checkCastType(mode, token, self_type, target_type);
-                self.ktype_symbol = target.value_symbol;
                 if (self.value())  |self_value| {
                     const result = try sema.castValueAssumeSafe(mode, token, self_value, target_type);
-                    self.ktype = target_type;
                     self.value_data = result.data;
                 }
+                self.ktype_symbol = target.value_symbol;
+                self.ktype = target_type;
             }
         }
     }

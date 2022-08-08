@@ -76,31 +76,36 @@ pub fn @"textDocument/hover"(s: *Server, request: Request) !void {
                         }
                         const name_end = text.items.len;
                         if (meta.ktype) |ktype| {
-                            if (meta.ktype_symbol) |ts| {
-                                const sym_txt = try std.fmt.allocPrint(s.allocator, "{q}", .{ts});
-                                defer s.allocator.free(sym_txt);
-                                const typ_txt = try std.fmt.allocPrint(s.allocator, "{}", .{ktype});
-                                defer s.allocator.free(typ_txt);
-                                if (std.mem.eql(u8, sym_txt, typ_txt)) {
-                                    try writer.print(": {s}\n", .{typ_txt});
-                                }
-                                else {
-                                    try writer.print(": {s} ({s})\n", .{sym_txt, typ_txt});
-                                }
+                            if (ktype == .function) {
+                                try writer.print("{~}\n", .{ktype});
                             }
                             else {
-                                try writer.print(": {}\n", .{ktype});
-                            }
-                            if (meta.value()) |value| {
-                                const value_start = text.items.len;
-                                try writer.print("{~}", .{value});
-                                const value_text = text.items[value_start..];
-                                const name_text = text.items[name_start..name_end];
-                                if (std.mem.eql(u8, value_text, name_text)) {
-                                    text.items.len -= value_text.len;
+                                if (meta.ktype_symbol) |ts| {
+                                    const sym_txt = try std.fmt.allocPrint(s.allocator, "{q}", .{ts});
+                                    defer s.allocator.free(sym_txt);
+                                    const typ_txt = try std.fmt.allocPrint(s.allocator, "{}", .{ktype});
+                                    defer s.allocator.free(typ_txt);
+                                    if (std.mem.eql(u8, sym_txt, typ_txt)) {
+                                        try writer.print(": {s}\n", .{typ_txt});
+                                    }
+                                    else {
+                                        try writer.print(": {s} ({s})\n", .{sym_txt, typ_txt});
+                                    }
                                 }
                                 else {
-                                    try writer.writeByte('\n');
+                                    try writer.print(": {}\n", .{ktype});
+                                }
+                                if (meta.value()) |value| {
+                                    const value_start = text.items.len;
+                                    try writer.print("{~}", .{value});
+                                    const value_text = text.items[value_start..];
+                                    const name_text = text.items[name_start..name_end];
+                                    if (std.mem.eql(u8, value_text, name_text)) {
+                                        text.items.len -= value_text.len;
+                                    }
+                                    else {
+                                        try writer.writeByte('\n');
+                                    }
                                 }
                             }
                         }

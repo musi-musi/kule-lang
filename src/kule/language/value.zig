@@ -20,7 +20,8 @@ pub const Value = struct {
 
     pub const Data = ValueData;
 
-    pub fn init(ktype: KType, value: anytype) Value {
+    pub fn init(type_init: anytype, value: anytype) Value {
+        const ktype = KType.init(type_init);
         const T = @TypeOf(value);
         const data = switch (T) {
             Data => value,

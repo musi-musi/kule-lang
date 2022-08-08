@@ -129,6 +129,7 @@ pub const Semantics = struct {
     pub const Data = struct {
         map: Map = .{},
         addr_map: AddrMap = .{},
+        parent: ?*Data = null,
 
         pub const AddrMap = std.AutoHashMapUnmanaged(usize, Node);
         pub const Map = std.HashMapUnmanaged(Node, Meta, struct {
@@ -185,13 +186,19 @@ pub const Semantics = struct {
         }
 
         pub fn get(self: Data, node_ptr: anytype) Meta {
-            // this will only ever be called after all nodes have been added
-            return self.map.get(initNode(node_ptr)).?;
+            return self.ptr(node_ptr).*;
         }
 
         pub fn ptr(self: Data, node_ptr: anytype) *Meta {
-            // this will only ever be called after all nodes have been added
-            return self.map.getPtr(initNode(node_ptr)).?;
+            if (self.map.getPtr(initNode(node_ptr))) |m| {
+                return m;
+            }
+            else if (self.parent) |parent| {
+                return parent.ptr(node_ptr);
+            }
+            else {
+                std.debug.panic("uninitialized meta for {s}", .{@typeName(@TypeOf(node_ptr))});
+            }
         }
 
         

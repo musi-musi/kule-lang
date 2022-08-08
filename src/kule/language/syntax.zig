@@ -145,6 +145,27 @@ pub const Syntax = struct {
             };
         };
 
+        pub fn firstCharSlice(expr: anytype) []const u8 {
+            const T = @TypeOf(expr);
+            return switch (T) {
+                Expr => firstCharSlice(expr.expr),
+                Add, Mul => firstCharSlice(expr.operand),
+                Neg => if (expr.op) |op| op.text[0..1]
+                    else firstCharSlice(expr.operand),
+                Eval => firstCharSlice(expr.function),
+                Access => firstCharSlice(expr.container),
+                Atom => switch(expr) {
+                    .number => expr.number.text[0..1],
+                    .name => expr.name.text[0..1],
+                    .module => expr.module.kw_module.text[0..1],
+                    .import => expr.import.kw_import.text[0..1],
+                    .parens => expr.parens.lparen.text[0..1],
+                },
+                else => @compileError(@typeName(T) ++ " is not an expression node"),
+            };
+
+        }
+
     };
 
 };
